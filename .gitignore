@@ -42,4 +42,4 @@ yarn-error.log*
 next-env.d.ts
 
 # local agent/claude tools
-.claude
+# .claude
