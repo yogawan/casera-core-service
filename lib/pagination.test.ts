@@ -23,14 +23,18 @@ import {
 } from "@/lib/pagination";
 import { listChangeRequestsQuerySchema } from "@/validations/approvalSchema";
 import { listBranchesQuerySchema } from "@/validations/branchSchema";
+import { listChemicalsQuerySchema } from "@/validations/chemicalSchema";
+import { listColouringsQuerySchema } from "@/validations/colouringSchema";
 import { listCustomersQuerySchema } from "@/validations/customerSchema";
+import { listHaircutsQuerySchema } from "@/validations/haircutSchema";
 import {
   listInventoryQuerySchema,
   listStockMovementsQuerySchema,
 } from "@/validations/inventorySchema";
-import { listServicesQuerySchema } from "@/validations/serviceSchema";
+import { listShavingsQuerySchema } from "@/validations/shavingSchema";
 import { listSubscriptionInvoicesQuerySchema } from "@/validations/subscriptionSchema";
 import { listTransactionsQuerySchema } from "@/validations/transactionSchema";
+import { listTreatmentsQuerySchema } from "@/validations/treatmentSchema";
 import { listUsersQuerySchema } from "@/validations/userSchema";
 
 describe("paginationQuerySchema", () => {
@@ -238,7 +242,12 @@ describe("every list-query schema shares one pagination shape", () => {
     subscriptionInvoices: listSubscriptionInvoicesQuerySchema,
     branches: listBranchesQuerySchema,
     customers: listCustomersQuerySchema,
-    services: listServicesQuerySchema,
+    // PRD §5.14: Service (one schema) is replaced by five category schemas.
+    haircuts: listHaircutsQuerySchema,
+    shavings: listShavingsQuerySchema,
+    treatments: listTreatmentsQuerySchema,
+    colourings: listColouringsQuerySchema,
+    chemicals: listChemicalsQuerySchema,
     users: listUsersQuerySchema,
   };
 
@@ -246,7 +255,7 @@ describe("every list-query schema shares one pagination shape", () => {
 
   it("covers every list-query schema in validations/", () => {
     // Guards against the table silently falling behind the codebase.
-    expect(names).toHaveLength(9);
+    expect(names).toHaveLength(13);
   });
 
   it.each(names)("%s: same defaults", (name) => {
