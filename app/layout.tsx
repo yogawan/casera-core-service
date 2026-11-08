@@ -9,7 +9,7 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Casera — Aplikasi Kasir & Manajemen Barbershop Multi-Cabang",
+  title: "Casera - Aplikasi Kasir & Manajemen Barbershop Multi-Cabang",
   description:
     "Kelola transaksi, stok, karyawan, dan pembayaran QRIS barbershop Anda dalam satu dashboard. Pantau semua cabang secara real-time dengan Casera.",
   openGraph: {
