@@ -11,7 +11,10 @@
     "test": "vitest",
     "test:ui": "vitest --ui",
     "seed:host": "tsx --env-file=.env.local scripts/seedHost.ts",
-    "seed:plan": "tsx --env-file=.env.local scripts/seedPlan.ts"
+    "seed:plan": "tsx --env-file=.env.local scripts/seedPlan.ts",
+    "seed:change-requests": "tsx --env-file=.env.local scripts/seedChangeRequests.ts",
+    "backfill:employees": "tsx --env-file=.env.local scripts/backfillEmployeeRecords.ts",
+    "migrate:service-categories": "tsx --env-file=.env.local scripts/migrateServiceToCategories.ts"
   },
   "dependencies": {
     "@scalar/nextjs-api-reference": "^0.12.10",
