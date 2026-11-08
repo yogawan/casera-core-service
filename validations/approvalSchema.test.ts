@@ -12,9 +12,17 @@ function mockObjectId(): string {
 
 describe("Approval Schemas", () => {
   describe("requestedChangesSchema", () => {
-    it("should accept serviceId change", () => {
+    it("should accept haircutId change", () => {
       const result = requestedChangesSchema.safeParse({
-        serviceId: mockObjectId(),
+        haircutId: mockObjectId(),
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("should accept more than one category id at once", () => {
+      const result = requestedChangesSchema.safeParse({
+        haircutId: mockObjectId(),
+        shavingId: mockObjectId(),
       });
       expect(result.success).toBe(true);
     });
@@ -49,7 +57,7 @@ describe("Approval Schemas", () => {
 
     it("should allow multiple changes at once", () => {
       const result = requestedChangesSchema.safeParse({
-        serviceId: mockObjectId(),
+        haircutId: mockObjectId(),
         discountAmount: 25000,
         serviceHourType: "OVERTIME",
       });
@@ -63,7 +71,7 @@ describe("Approval Schemas", () => {
 
     it("should reject paymentMethod (immutable)", () => {
       const payload = {
-        serviceId: mockObjectId(),
+        haircutId: mockObjectId(),
         paymentMethod: "QRIS",
       };
       const result = requestedChangesSchema.safeParse(payload);
@@ -72,7 +80,7 @@ describe("Approval Schemas", () => {
 
     it("should reject transactionStatus (immutable)", () => {
       const payload = {
-        serviceId: mockObjectId(),
+        haircutId: mockObjectId(),
         transactionStatus: "COMPLETED",
       };
       const result = requestedChangesSchema.safeParse(payload);
@@ -143,7 +151,7 @@ describe("Approval Schemas", () => {
       const result = submitChangeRequestSchema.safeParse({
         reason: "Update service and discount",
         requestedChanges: {
-          serviceId: mockObjectId(),
+          haircutId: mockObjectId(),
           discountAmount: 30000,
           serviceHourType: "OVERTIME",
         },

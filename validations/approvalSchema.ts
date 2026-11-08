@@ -7,10 +7,17 @@ import { paginationQueryFields } from "@/lib/pagination";
 // progress) and branch/agent/transactionStatus/paymentStatus (those have
 // their own dedicated mechanisms: complete/cancel and the Midtrans
 // webhook). customerId is nullable so a request can correct "no customer
-// recorded" in either direction.
+// recorded" in either direction. PRD §5.14: serviceId is replaced by five
+// independent optional category ids, mirroring createTransactionSchema —
+// each sets/changes that one category on the transaction; the other four
+// (if present on the transaction) are left untouched by this request.
 export const requestedChangesSchema = z
   .object({
-    serviceId: z.string().min(1).optional(),
+    haircutId: z.string().min(1).optional(),
+    shavingId: z.string().min(1).optional(),
+    treatmentId: z.string().min(1).optional(),
+    colouringId: z.string().min(1).optional(),
+    chemicalId: z.string().min(1).optional(),
     customerId: z.string().min(1).nullable().optional(),
     discountAmount: z.number().nonnegative().optional(),
     serviceHourType: z.enum(["REGULAR", "OVERTIME"]).optional(),

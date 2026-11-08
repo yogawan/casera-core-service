@@ -4,10 +4,18 @@ import { requireBranchAccess } from "@/lib/authorization";
 import { Errors } from "@/lib/errors";
 import { connectDB } from "@/lib/mongodb";
 import { paginateQueries, paginationSkip, stableSort } from "@/lib/pagination";
-import { computeServicePricing, extractRefId } from "@/lib/utils";
+import {
+  computeMultiCategoryPricing,
+  computeServicePricing,
+  extractRefId,
+} from "@/lib/utils";
+import ChemicalModel from "@/models/Chemical";
+import ColouringModel from "@/models/Colouring";
 import CustomerModel from "@/models/Customer";
-import ServiceModel from "@/models/Service";
+import HaircutModel from "@/models/Haircut";
+import ShavingModel from "@/models/Shaving";
 import TransactionModel from "@/models/Transaction";
+import TreatmentModel from "@/models/Treatment";
 import type {
   ApproveChangeRequestInput,
   ListChangeRequestsQuery,
@@ -16,10 +24,21 @@ import type {
 } from "@/validations/approvalSchema";
 
 interface RequestedChanges {
-  serviceId?: string;
+  haircutId?: string;
+  shavingId?: string;
+  treatmentId?: string;
+  colouringId?: string;
+  chemicalId?: string;
   customerId?: string | null;
   discountAmount?: number;
   serviceHourType?: "REGULAR" | "OVERTIME";
+}
+
+interface PricedCategoryDoc {
+  _id: unknown;
+  name: string;
+  price: number;
+  revenueSharing: { ownerPercentage: number; employeePercentage: number };
 }
 
 export async function submitChangeRequest(
@@ -55,10 +74,34 @@ export async function submitChangeRequest(
   // later — state can still drift between submission and review (§10.1
   // step 9), but there's no reason to let an obviously-bad request sit in
   // the queue untouched.
-  if (changes.serviceId) {
-    const service = await ServiceModel.findById(changes.serviceId);
-    if (!service || !service.isActive) {
-      throw Errors.businessRule("Requested service is not available.");
+  if (changes.haircutId) {
+    const haircut = await HaircutModel.findById(changes.haircutId);
+    if (!haircut) {
+      throw Errors.businessRule("Requested haircut is not available.");
+    }
+  }
+  if (changes.shavingId) {
+    const shaving = await ShavingModel.findById(changes.shavingId);
+    if (!shaving) {
+      throw Errors.businessRule("Requested shaving is not available.");
+    }
+  }
+  if (changes.treatmentId) {
+    const treatment = await TreatmentModel.findById(changes.treatmentId);
+    if (!treatment) {
+      throw Errors.businessRule("Requested treatment is not available.");
+    }
+  }
+  if (changes.colouringId) {
+    const colouring = await ColouringModel.findById(changes.colouringId);
+    if (!colouring) {
+      throw Errors.businessRule("Requested colouring is not available.");
+    }
+  }
+  if (changes.chemicalId) {
+    const chemical = await ChemicalModel.findById(changes.chemicalId);
+    if (!chemical) {
+      throw Errors.businessRule("Requested chemical is not available.");
     }
   }
   if (changes.customerId) {
@@ -158,47 +201,180 @@ export async function approveChangeRequest(
   const after: Record<string, unknown> = {};
 
   // §10.1 step 9: re-validate against current state, not whatever was
-  // true at submission time.
-  let requestedService: InstanceType<typeof ServiceModel> | null = null;
-  if (changes.serviceId !== undefined) {
-    requestedService = await ServiceModel.findById(changes.serviceId);
-    if (!requestedService || !requestedService.isActive) {
-      throw Errors.businessRule("Requested service is no longer available.");
-    }
-  }
+  // true at submission time. PRD §5.14: serviceId is replaced by five
+  // independent category refs — each is either (a) being changed to a
+  // newly-requested doc (re-fetched + re-validated here, never trusted
+  // from the original submission), or (b) left as-is, in which case its
+  // CURRENT catalog doc is still re-fetched live (not the frozen
+  // *Snapshot) so a category that went missing between submission and
+  // review is also caught. Any category change, or a discountAmount
+  // change alone, triggers a full recompute of all five financial fields
+  // from the resulting set of categories.
+  const categoryChangeRequested =
+    changes.haircutId !== undefined ||
+    changes.shavingId !== undefined ||
+    changes.treatmentId !== undefined ||
+    changes.colouringId !== undefined ||
+    changes.chemicalId !== undefined;
 
-  if (changes.serviceId !== undefined || changes.discountAmount !== undefined) {
-    const pricingService =
-      requestedService ?? (await ServiceModel.findById(transaction.service));
-    if (!pricingService || !pricingService.isActive) {
-      throw Errors.businessRule(
-        "Transaction's current service is no longer available.",
-      );
+  if (categoryChangeRequested || changes.discountAmount !== undefined) {
+    const resolved: PricedCategoryDoc[] = [];
+
+    if (changes.haircutId !== undefined) {
+      const haircut = await HaircutModel.findById(changes.haircutId);
+      if (!haircut) {
+        throw Errors.businessRule("Requested haircut is no longer available.");
+      }
+      before.haircut = transaction.haircut;
+      before.haircutSnapshot = transaction.haircutSnapshot;
+      transaction.haircut = haircut._id;
+      transaction.haircutSnapshot = {
+        name: haircut.name,
+        price: haircut.price,
+        ownerPercentage: haircut.revenueSharing.ownerPercentage,
+        employeePercentage: haircut.revenueSharing.employeePercentage,
+      };
+      after.haircut = haircut._id;
+      after.haircutSnapshot = transaction.haircutSnapshot;
+      resolved.push(haircut);
+    } else if (transaction.haircut) {
+      const haircut = await HaircutModel.findById(transaction.haircut);
+      if (!haircut) {
+        throw Errors.businessRule(
+          "Transaction's current haircut is no longer available.",
+        );
+      }
+      resolved.push(haircut);
     }
 
+    if (changes.shavingId !== undefined) {
+      const shaving = await ShavingModel.findById(changes.shavingId);
+      if (!shaving) {
+        throw Errors.businessRule("Requested shaving is no longer available.");
+      }
+      before.shaving = transaction.shaving;
+      before.shavingSnapshot = transaction.shavingSnapshot;
+      transaction.shaving = shaving._id;
+      transaction.shavingSnapshot = {
+        name: shaving.name,
+        price: shaving.price,
+        ownerPercentage: shaving.revenueSharing.ownerPercentage,
+        employeePercentage: shaving.revenueSharing.employeePercentage,
+      };
+      after.shaving = shaving._id;
+      after.shavingSnapshot = transaction.shavingSnapshot;
+      resolved.push(shaving);
+    } else if (transaction.shaving) {
+      const shaving = await ShavingModel.findById(transaction.shaving);
+      if (!shaving) {
+        throw Errors.businessRule(
+          "Transaction's current shaving is no longer available.",
+        );
+      }
+      resolved.push(shaving);
+    }
+
+    if (changes.treatmentId !== undefined) {
+      const treatment = await TreatmentModel.findById(changes.treatmentId);
+      if (!treatment) {
+        throw Errors.businessRule(
+          "Requested treatment is no longer available.",
+        );
+      }
+      before.treatment = transaction.treatment;
+      before.treatmentSnapshot = transaction.treatmentSnapshot;
+      transaction.treatment = treatment._id;
+      transaction.treatmentSnapshot = {
+        name: treatment.name,
+        price: treatment.price,
+        ownerPercentage: treatment.revenueSharing.ownerPercentage,
+        employeePercentage: treatment.revenueSharing.employeePercentage,
+      };
+      after.treatment = treatment._id;
+      after.treatmentSnapshot = transaction.treatmentSnapshot;
+      resolved.push(treatment);
+    } else if (transaction.treatment) {
+      const treatment = await TreatmentModel.findById(transaction.treatment);
+      if (!treatment) {
+        throw Errors.businessRule(
+          "Transaction's current treatment is no longer available.",
+        );
+      }
+      resolved.push(treatment);
+    }
+
+    if (changes.colouringId !== undefined) {
+      const colouring = await ColouringModel.findById(changes.colouringId);
+      if (!colouring) {
+        throw Errors.businessRule(
+          "Requested colouring is no longer available.",
+        );
+      }
+      before.colouring = transaction.colouring;
+      before.colouringSnapshot = transaction.colouringSnapshot;
+      transaction.colouring = colouring._id;
+      transaction.colouringSnapshot = {
+        name: colouring.name,
+        price: colouring.price,
+        ownerPercentage: colouring.revenueSharing.ownerPercentage,
+        employeePercentage: colouring.revenueSharing.employeePercentage,
+      };
+      after.colouring = colouring._id;
+      after.colouringSnapshot = transaction.colouringSnapshot;
+      resolved.push(colouring);
+    } else if (transaction.colouring) {
+      const colouring = await ColouringModel.findById(transaction.colouring);
+      if (!colouring) {
+        throw Errors.businessRule(
+          "Transaction's current colouring is no longer available.",
+        );
+      }
+      resolved.push(colouring);
+    }
+
+    if (changes.chemicalId !== undefined) {
+      const chemical = await ChemicalModel.findById(changes.chemicalId);
+      if (!chemical) {
+        throw Errors.businessRule("Requested chemical is no longer available.");
+      }
+      before.chemical = transaction.chemical;
+      before.chemicalSnapshot = transaction.chemicalSnapshot;
+      transaction.chemical = chemical._id;
+      transaction.chemicalSnapshot = {
+        name: chemical.name,
+        price: chemical.price,
+        ownerPercentage: chemical.revenueSharing.ownerPercentage,
+        employeePercentage: chemical.revenueSharing.employeePercentage,
+      };
+      after.chemical = chemical._id;
+      after.chemicalSnapshot = transaction.chemicalSnapshot;
+      resolved.push(chemical);
+    } else if (transaction.chemical) {
+      const chemical = await ChemicalModel.findById(transaction.chemical);
+      if (!chemical) {
+        throw Errors.businessRule(
+          "Transaction's current chemical is no longer available.",
+        );
+      }
+      resolved.push(chemical);
+    }
+
+    // §5.14 (confirmed 2026-11-08): same rule as createTransaction — exactly
+    // one resulting category keeps the original single-service formula;
+    // more than one switches to the gross-per-category formula where
+    // discount only reduces `total`, never ownerRevenue/employeeRevenue.
     const effectiveDiscount =
       changes.discountAmount ?? transaction.discountAmount;
-    const pricing = computeServicePricing(pricingService, effectiveDiscount);
+    const pricing =
+      resolved.length === 1
+        ? computeServicePricing(resolved[0], effectiveDiscount)
+        : computeMultiCategoryPricing(resolved, effectiveDiscount);
 
     before.subtotal = transaction.subtotal;
     before.discountAmount = transaction.discountAmount;
     before.total = transaction.total;
     before.ownerRevenue = transaction.ownerRevenue;
     before.employeeRevenue = transaction.employeeRevenue;
-    before.serviceSnapshot = transaction.serviceSnapshot;
-
-    if (requestedService) {
-      before.service = transaction.service;
-      transaction.service = requestedService._id;
-      transaction.serviceSnapshot = {
-        name: requestedService.name,
-        price: requestedService.price,
-        ownerPercentage: requestedService.revenueSharing.ownerPercentage,
-        employeePercentage: requestedService.revenueSharing.employeePercentage,
-      };
-      after.service = requestedService._id;
-      after.serviceSnapshot = transaction.serviceSnapshot;
-    }
 
     transaction.subtotal = pricing.subtotal;
     transaction.discountAmount = effectiveDiscount;
