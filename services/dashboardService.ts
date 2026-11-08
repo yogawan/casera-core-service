@@ -276,6 +276,38 @@ export async function getRevenue(user: SessionUser, query: RevenueQuery) {
   };
 }
 
+// PRD §5.14: one transaction may fill more than one of the five category
+// refs at once, each living as its own optional ref+snapshot pair directly
+// on Transaction (not a separate line-item collection to $unionWith). This
+// drives one aggregation per category below, matching only transactions
+// where that ref is set, then merging + re-ranking the five result sets in
+// JS — Mongo has no single pipeline shape that ranks across five
+// differently-named fields on the same document.
+const CATEGORY_PERFORMANCE_FIELDS = [
+  { ref: "haircut", snapshotKey: "haircutSnapshot", category: "HAIRCUT" },
+  { ref: "shaving", snapshotKey: "shavingSnapshot", category: "SHAVING" },
+  {
+    ref: "treatment",
+    snapshotKey: "treatmentSnapshot",
+    category: "TREATMENT",
+  },
+  {
+    ref: "colouring",
+    snapshotKey: "colouringSnapshot",
+    category: "COLOURING",
+  },
+  { ref: "chemical", snapshotKey: "chemicalSnapshot", category: "CHEMICAL" },
+] as const;
+
+interface ServicePerformanceRow {
+  _id: unknown;
+  category: string;
+  serviceName: string;
+  count: number;
+  revenue: number;
+  avgOrderValue: number;
+}
+
 export async function getServicePerformance(
   user: SessionUser,
   query: ServicePerformanceQuery,
@@ -286,40 +318,71 @@ export async function getServicePerformance(
   const branchId =
     user.role === "HOST" ? query.branchId : user.branch || undefined;
 
-  const match = {
+  const baseMatch = {
     ...baseTransactionMatch(branchId),
     createdAt: { $gte: from, $lte: to },
   };
 
-  const performance = await TransactionModel.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: "$service",
-        serviceName: { $first: "$serviceSnapshot.name" },
-        count: { $sum: 1 },
-        revenue: {
-          $sum: {
-            $cond: [{ $eq: ["$paymentStatus", "PAID"] }, "$total", 0],
+  // Each category's own group is pulled uncapped (no per-category $limit)
+  // so capping happens once, on the combined ranking below — otherwise a
+  // category with many low-revenue entries could push a genuine top
+  // performer from another category out of the result before the two are
+  // ever compared. `revenue` is each category's own GROSS snapshot price
+  // (§5.14, confirmed 2026-11-08: discount is never redistributed back
+  // into individual categories) — the same basis computeMultiCategoryPricing
+  // uses, not a discount-prorated figure.
+  const allRows: ServicePerformanceRow[] = [];
+
+  for (const field of CATEGORY_PERFORMANCE_FIELDS) {
+    const match = { ...baseMatch, [field.ref]: { $ne: null } };
+
+    const rows: Omit<ServicePerformanceRow, "category">[] =
+      await TransactionModel.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: `$${field.ref}`,
+            serviceName: { $first: `$${field.snapshotKey}.name` },
+            count: { $sum: 1 },
+            revenue: {
+              $sum: {
+                $cond: [
+                  { $eq: ["$paymentStatus", "PAID"] },
+                  `$${field.snapshotKey}.price`,
+                  0,
+                ],
+              },
+            },
+            avgOrderValue: { $avg: `$${field.snapshotKey}.price` },
           },
         },
-        avgOrderValue: { $avg: "$total" },
-      },
-    },
-    cappedFacet(
-      query.limit,
-      { revenue: -1, _id: -1 },
-      {
-        _id: 1,
-        serviceName: 1,
-        count: 1,
-        revenue: { $round: ["$revenue", 0] },
-        avgOrderValue: { $round: ["$avgOrderValue", 0] },
-      },
-    ),
-  ]);
+        {
+          $project: {
+            _id: 1,
+            serviceName: 1,
+            count: 1,
+            revenue: { $round: ["$revenue", 0] },
+            avgOrderValue: { $round: ["$avgOrderValue", 0] },
+          },
+        },
+      ]);
 
-  return readCappedFacet(performance, query.limit);
+    for (const row of rows) {
+      allRows.push({ ...row, category: field.category });
+    }
+  }
+
+  allRows.sort((a, b) => {
+    if (b.revenue !== a.revenue) return b.revenue - a.revenue;
+    // Tie-break matches the descending-_id convention used elsewhere in
+    // this file (e.g. the old cappedFacet calls) — arbitrary but stable.
+    return String(b._id).localeCompare(String(a._id));
+  });
+
+  const total = allRows.length;
+  const items = allRows.slice(0, query.limit);
+
+  return { items, limit: query.limit, total, truncated: total > items.length };
 }
 
 export async function getAgentPerformance(
