@@ -4,22 +4,21 @@ export default function Page() {
   return (
     <main className="flex-1 flex flex-col items-center justify-center px-6 py-24 text-center">
       {/* Badge */}
-      <span className="inline-flex items-center gap-1.5 rounded-full bg-[--color-primary-light] px-3 py-1 text-xs font-semibold text-[--color-primary] mb-6 tracking-wide uppercase">
+      <span className="mb-6 inline-flex items-center gap-1.5 rounded-full bg-primary-light px-3 py-1 text-xs font-semibold text-primary tracking-wide uppercase">
         <span className="relative flex h-1.5 w-1.5">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[--color-primary] opacity-75" />
-          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[--color-primary]" />
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+          <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-primary" />
         </span>
         API · v1 · Live
       </span>
 
       {/* Headline */}
-      <h1 className="max-w-3xl text-4xl sm:text-5xl lg:text-6xl font-extrabold leading-tight tracking-tight text-[--color-foreground]">
-        Backend API untuk{" "}
-        <span className="text-[--color-primary]">Barbershop</span> Anda
+      <h1 className="max-w-3xl text-4xl font-semibold leading-tight tracking-tight text-foreground sm:text-5xl lg:text-6xl">
+        Backend API untuk <span className="text-primary">Barbershop</span> Anda
       </h1>
 
       {/* Subheadline */}
-      <p className="mt-6 max-w-2xl text-lg sm:text-xl text-[--color-muted] leading-relaxed">
+      <p className="mt-6 max-w-2xl text-lg leading-relaxed text-muted sm:text-xl">
         Casera menyediakan REST API lengkap untuk transaksi, manajemen stok,
         karyawan, cabang, dan pembayaran QRIS — siap diintegrasikan ke aplikasi
         mobile atau POS Anda.
@@ -29,7 +28,7 @@ export default function Page() {
       <div className="mt-10 flex flex-col sm:flex-row items-center gap-4">
         <Link
           href="/scalar/docs"
-          className="inline-flex items-center gap-2 rounded-[--radius-md] bg-[--color-primary] hover:bg-[--color-primary-hover] px-7 py-3.5 text-sm font-semibold text-white shadow-md transition-colors duration-150 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[--color-primary]"
+          className="inline-flex items-center gap-2 rounded-md bg-primary px-7 py-3.5 text-sm font-semibold text-white shadow-md transition-colors duration-150 hover:bg-primary-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         >
           Lihat Dokumentasi API
           <svg
@@ -51,7 +50,7 @@ export default function Page() {
           href="https://github.com/yogawan/grooma"
           target="_blank"
           rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 rounded-[--radius-md] border border-[--color-border] bg-[--color-surface] hover:bg-[--color-background] px-7 py-3.5 text-sm font-semibold text-[--color-foreground] transition-colors duration-150"
+          className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-7 py-3.5 text-sm font-semibold text-foreground transition-colors duration-150 hover:bg-background"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
@@ -75,12 +74,10 @@ export default function Page() {
           { label: "Payment Gateway", value: "Midtrans" },
         ].map(({ label, value }) => (
           <div key={label} className="flex flex-col gap-1">
-            <dt className="text-xs font-medium text-[--color-muted] uppercase tracking-wider">
+            <dt className="text-xs font-medium text-muted uppercase tracking-wider">
               {label}
             </dt>
-            <dd className="text-2xl font-extrabold text-[--color-foreground]">
-              {value}
-            </dd>
+            <dd className="text-2xl font-extrabold text-foreground">{value}</dd>
           </div>
         ))}
       </dl>
