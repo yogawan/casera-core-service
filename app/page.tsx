@@ -21,8 +21,8 @@ export default function Page() {
       {/* Subheadline */}
       <p className="mt-6 max-w-2xl text-lg sm:text-xl text-[--color-muted] leading-relaxed">
         Casera menyediakan REST API lengkap untuk transaksi, manajemen stok,
-        karyawan, cabang, dan pembayaran QRIS — siap diintegrasikan ke
-        aplikasi mobile atau POS Anda.
+        karyawan, cabang, dan pembayaran QRIS — siap diintegrasikan ke aplikasi
+        mobile atau POS Anda.
       </p>
 
       {/* CTA */}
