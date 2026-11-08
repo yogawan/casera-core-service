@@ -3,13 +3,26 @@ import { z } from "zod";
 import { paginationQueryFields } from "@/lib/pagination";
 
 // §8.3: the backend never trusts agentId, branchId, total, ownerRevenue,
-// employeeRevenue, or serviceSnapshot from the client — they simply have no
+// employeeRevenue, or any *Snapshot from the client — they simply have no
 // field here, and .strict() turns any attempt to send them into a 400
 // instead of a silently-ignored no-op.
 export const createTransactionSchema = z
   .object({
     customerId: z.string().trim().min(1).optional(),
-    serviceId: z.string().trim().min(1),
+    // PRD §5.14: Service (single required serviceId) is replaced by five
+    // independent optional category ids — a transaction fills 1 to 5 of
+    // these at once, never more than one per category (not an array). The
+    // .refine() below requires at least one, mirroring the model's own
+    // pre("validate") hook.
+    haircutId: z.string().trim().min(1).optional(),
+    shavingId: z.string().trim().min(1).optional(),
+    treatmentId: z.string().trim().min(1).optional(),
+    colouringId: z.string().trim().min(1).optional(),
+    chemicalId: z.string().trim().min(1).optional(),
+    // §5.5/§5.13/§8.3: deliberately NOT optional and NOT derived from the
+    // session, unlike agentId/branchId — the backend has no other way to
+    // know who performed the service except the AGENT picking them manually.
+    employeeId: z.string().trim().min(1),
     paymentMethod: z.enum(["CASH", "QRIS"]),
     discountAmount: z.number().nonnegative().optional().default(0),
     serviceHourType: z
@@ -17,7 +30,21 @@ export const createTransactionSchema = z
       .optional()
       .default("REGULAR"),
   })
-  .strict();
+  .strict()
+  .refine(
+    (data) =>
+      Boolean(
+        data.haircutId ||
+          data.shavingId ||
+          data.treatmentId ||
+          data.colouringId ||
+          data.chemicalId,
+      ),
+    {
+      message:
+        "At least one of haircutId, shavingId, treatmentId, colouringId, chemicalId is required.",
+    },
+  );
 export type CreateTransactionInput = z.infer<typeof createTransactionSchema>;
 
 export const listTransactionsQuerySchema = z.object({

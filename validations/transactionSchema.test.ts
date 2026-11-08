@@ -12,7 +12,8 @@ describe("Transaction Schemas", () => {
   describe("createTransactionSchema", () => {
     const validPayload = {
       customerId: mockObjectId(),
-      serviceId: mockObjectId(),
+      haircutId: mockObjectId(),
+      employeeId: mockObjectId(),
       paymentMethod: "CASH",
       discountAmount: 0,
     };
@@ -91,8 +92,27 @@ describe("Transaction Schemas", () => {
       expect(result.success).toBe(true);
     });
 
-    it("should require serviceId", () => {
-      const { serviceId, ...payload } = validPayload;
+    it("should require at least one category id", () => {
+      const { haircutId, ...payload } = validPayload;
+      const result = createTransactionSchema.safeParse(payload);
+      expect(result.success).toBe(false);
+    });
+
+    it("should accept multiple category ids at once", () => {
+      const payload = { ...validPayload, shavingId: mockObjectId() };
+      const result = createTransactionSchema.safeParse(payload);
+      expect(result.success).toBe(true);
+    });
+
+    it("should accept any single category id without the others", () => {
+      const { haircutId, ...rest } = validPayload;
+      const payload = { ...rest, chemicalId: mockObjectId() };
+      const result = createTransactionSchema.safeParse(payload);
+      expect(result.success).toBe(true);
+    });
+
+    it("should require employeeId", () => {
+      const { employeeId, ...payload } = validPayload;
       const result = createTransactionSchema.safeParse(payload);
       expect(result.success).toBe(false);
     });

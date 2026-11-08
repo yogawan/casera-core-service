@@ -46,6 +46,44 @@ const ChangeHistorySchema = new Schema(
   { _id: false },
 );
 
+// Shared by all five category snapshot fields below (PRD §5.14) — a point-
+// in-time copy of {name, price, ownerPercentage, employeePercentage} taken
+// from the chosen Haircut/Shaving/Treatment/Colouring/Chemical document at
+// creation time, so transaction history never changes if the catalog entry
+// is edited later. Modeled as its own Schema (not an inline nested object)
+// so an unset category (e.g. no shaving on this transaction) leaves
+// shavingSnapshot entirely absent instead of Mongoose demanding its
+// required inner fields anyway.
+const CategorySnapshotSchema = new Schema(
+  {
+    name: {
+      type: String,
+      required: true,
+    },
+
+    price: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    ownerPercentage: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+
+    employeePercentage: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+  },
+  { _id: false },
+);
+
 const TransactionSchema = new Schema(
   {
     transactionCode: {
@@ -67,43 +105,80 @@ const TransactionSchema = new Schema(
       required: true,
     },
 
+    // Who performed the service — distinct from `agent`, who only processed
+    // the sale at the register (§5.5). Required (PLAN-GROOMA.md Phase 10):
+    // services/transactionService.ts resolves and validates employeeId
+    // before every create, so this is always populated by the time it runs.
+    // Prerequisite: scripts/backfillEmployeeRecords.ts must have been run
+    // against this deployment's database first, or every existing AGENT
+    // without a backfilled Employee record will be unable to create
+    // transactions.
+    employee: {
+      type: Schema.Types.ObjectId,
+      ref: "Employee",
+      required: true,
+    },
+
     customer: {
       type: Schema.Types.ObjectId,
       ref: "Customer",
       default: null,
     },
 
-    service: {
+    // PRD §5.14: Service (single catalog) is replaced by five optional
+    // category refs — a transaction fills 1 to 5 of these at once (e.g.
+    // haircut + shaving in the same visit), never more than one document
+    // per category. "At least one of the five" is enforced below by this
+    // schema's own pre("validate") hook, mirroring how `service` used to
+    // be `required: true`.
+    haircut: {
       type: Schema.Types.ObjectId,
-      ref: "Service",
-      required: true,
+      ref: "Haircut",
+      default: null,
     },
 
-    serviceSnapshot: {
-      name: {
-        type: String,
-        required: true,
-      },
+    haircutSnapshot: {
+      type: CategorySnapshotSchema,
+    },
 
-      price: {
-        type: Number,
-        required: true,
-        min: 0,
-      },
+    shaving: {
+      type: Schema.Types.ObjectId,
+      ref: "Shaving",
+      default: null,
+    },
 
-      ownerPercentage: {
-        type: Number,
-        required: true,
-        min: 0,
-        max: 100,
-      },
+    shavingSnapshot: {
+      type: CategorySnapshotSchema,
+    },
 
-      employeePercentage: {
-        type: Number,
-        required: true,
-        min: 0,
-        max: 100,
-      },
+    treatment: {
+      type: Schema.Types.ObjectId,
+      ref: "Treatment",
+      default: null,
+    },
+
+    treatmentSnapshot: {
+      type: CategorySnapshotSchema,
+    },
+
+    colouring: {
+      type: Schema.Types.ObjectId,
+      ref: "Colouring",
+      default: null,
+    },
+
+    colouringSnapshot: {
+      type: CategorySnapshotSchema,
+    },
+
+    chemical: {
+      type: Schema.Types.ObjectId,
+      ref: "Chemical",
+      default: null,
+    },
+
+    chemicalSnapshot: {
+      type: CategorySnapshotSchema,
     },
 
     paymentMethod: {
@@ -254,10 +329,34 @@ const TransactionSchema = new Schema(
   },
 );
 
+// PRD §5.14: replaces the old `service: required: true` invariant now that
+// there are five independent optional refs instead of one required one.
+TransactionSchema.pre("validate", function () {
+  const hasAnyCategory =
+    this.haircut ||
+    this.shaving ||
+    this.treatment ||
+    this.colouring ||
+    this.chemical;
+
+  if (!hasAnyCategory) {
+    this.invalidate(
+      "haircut",
+      "At least one of haircut, shaving, treatment, colouring, or chemical is required.",
+    );
+  }
+});
+
 TransactionSchema.index({ createdAt: -1 });
 TransactionSchema.index({ branch: 1, createdAt: -1 });
 TransactionSchema.index({ agent: 1, createdAt: -1 });
+TransactionSchema.index({ employee: 1, createdAt: -1 });
 TransactionSchema.index({ customer: 1, createdAt: -1 });
+TransactionSchema.index({ haircut: 1, createdAt: -1 });
+TransactionSchema.index({ shaving: 1, createdAt: -1 });
+TransactionSchema.index({ treatment: 1, createdAt: -1 });
+TransactionSchema.index({ colouring: 1, createdAt: -1 });
+TransactionSchema.index({ chemical: 1, createdAt: -1 });
 TransactionSchema.index({ paymentStatus: 1, createdAt: -1 });
 TransactionSchema.index({
   transactionStatus: 1,

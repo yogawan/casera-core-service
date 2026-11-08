@@ -13,15 +13,21 @@ import { paginateQueries, paginationSkip, stableSort } from "@/lib/pagination";
 import { getPaymentIntegrationMode } from "@/lib/paymentConfig";
 import {
   computeLoyaltyPoints,
+  computeMultiCategoryPricing,
   computeServicePricing,
   escapeRegex,
   extractRefId,
 } from "@/lib/utils";
 import BranchModel from "@/models/Branch";
+import ChemicalModel from "@/models/Chemical";
+import ColouringModel from "@/models/Colouring";
 import CustomerModel from "@/models/Customer";
+import EmployeeModel from "@/models/Employee";
+import HaircutModel from "@/models/Haircut";
 import PaymentModel from "@/models/Payment";
-import ServiceModel from "@/models/Service";
+import ShavingModel from "@/models/Shaving";
 import TransactionModel from "@/models/Transaction";
+import TreatmentModel from "@/models/Treatment";
 import {
   creditLoyaltyPoints,
   reverseLoyaltyPoints,
@@ -108,9 +114,80 @@ export async function createTransaction(
     throw Errors.businessRule("Branch is not active.");
   }
 
-  const service = await ServiceModel.findById(input.serviceId);
-  if (!service || !service.isActive) {
-    throw Errors.businessRule("Service is not available.");
+  // PRD §5.14: up to five independent category refs may be filled per
+  // transaction (never more than one document per category, not an array).
+  // createTransactionSchema's own .refine() already guarantees at least one
+  // id is present, mirroring Transaction's own pre("validate") hook.
+  const categories: Array<{
+    ref: "haircut" | "shaving" | "treatment" | "colouring" | "chemical";
+    snapshotKey:
+      | "haircutSnapshot"
+      | "shavingSnapshot"
+      | "treatmentSnapshot"
+      | "colouringSnapshot"
+      | "chemicalSnapshot";
+    doc: {
+      _id: unknown;
+      name: string;
+      price: number;
+      revenueSharing: { ownerPercentage: number; employeePercentage: number };
+    };
+  }> = [];
+
+  if (input.haircutId) {
+    const haircut = await HaircutModel.findById(input.haircutId);
+    if (!haircut) {
+      throw Errors.businessRule("Haircut is not available.");
+    }
+    categories.push({
+      ref: "haircut",
+      snapshotKey: "haircutSnapshot",
+      doc: haircut,
+    });
+  }
+  if (input.shavingId) {
+    const shaving = await ShavingModel.findById(input.shavingId);
+    if (!shaving) {
+      throw Errors.businessRule("Shaving is not available.");
+    }
+    categories.push({
+      ref: "shaving",
+      snapshotKey: "shavingSnapshot",
+      doc: shaving,
+    });
+  }
+  if (input.treatmentId) {
+    const treatment = await TreatmentModel.findById(input.treatmentId);
+    if (!treatment) {
+      throw Errors.businessRule("Treatment is not available.");
+    }
+    categories.push({
+      ref: "treatment",
+      snapshotKey: "treatmentSnapshot",
+      doc: treatment,
+    });
+  }
+  if (input.colouringId) {
+    const colouring = await ColouringModel.findById(input.colouringId);
+    if (!colouring) {
+      throw Errors.businessRule("Colouring is not available.");
+    }
+    categories.push({
+      ref: "colouring",
+      snapshotKey: "colouringSnapshot",
+      doc: colouring,
+    });
+  }
+  if (input.chemicalId) {
+    const chemical = await ChemicalModel.findById(input.chemicalId);
+    if (!chemical) {
+      throw Errors.businessRule("Chemical is not available.");
+    }
+    categories.push({
+      ref: "chemical",
+      snapshotKey: "chemicalSnapshot",
+      doc: chemical,
+    });
   }
 
   let customer = null;
@@ -121,8 +198,31 @@ export async function createTransaction(
     }
   }
 
+  // §5.5/§5.13: employee is who performed the service, distinct from
+  // `agent` above — must be an ACTIVE Employee in the same branch as this
+  // transaction, never trusted as-is from the client beyond its id.
+  const employee = await EmployeeModel.findById(input.employeeId);
+  if (
+    !employee ||
+    employee.employmentStatus !== "ACTIVE" ||
+    extractRefId(employee.branch) !== extractRefId(branch._id)
+  ) {
+    throw Errors.businessRule("Employee is not available for this branch.");
+  }
+
+  // §5.14 (confirmed 2026-11-08): exactly one category filled keeps using
+  // the original, unmodified single-service formula (ownerRevenue split
+  // from the post-discount total). More than one category switches to the
+  // gross-per-category formula, where discount only reduces `total` and is
+  // never redistributed into ownerRevenue/employeeRevenue — see
+  // computeMultiCategoryPricing's own comment for why that's deliberate.
   const { subtotal, total, ownerRevenue, employeeRevenue } =
-    computeServicePricing(service, input.discountAmount);
+    categories.length === 1
+      ? computeServicePricing(categories[0].doc, input.discountAmount)
+      : computeMultiCategoryPricing(
+          categories.map((category) => category.doc),
+          input.discountAmount,
+        );
   const pointsEarned = computeLoyaltyPoints(total);
 
   const transactionCode = await generateUniqueTransactionCode(branch.timezone);
@@ -155,18 +255,24 @@ export async function createTransaction(
     }
   }
 
+  const categoryData: Record<string, unknown> = {};
+  for (const category of categories) {
+    categoryData[category.ref] = category.doc._id;
+    categoryData[category.snapshotKey] = {
+      name: category.doc.name,
+      price: category.doc.price,
+      ownerPercentage: category.doc.revenueSharing.ownerPercentage,
+      employeePercentage: category.doc.revenueSharing.employeePercentage,
+    };
+  }
+
   const transaction = await TransactionModel.create({
     transactionCode,
     branch: branch._id,
     agent: user.id,
+    employee: employee._id,
     customer: customer?._id ?? null,
-    service: service._id,
-    serviceSnapshot: {
-      name: service.name,
-      price: service.price,
-      ownerPercentage: service.revenueSharing.ownerPercentage,
-      employeePercentage: service.revenueSharing.employeePercentage,
-    },
+    ...categoryData,
     paymentMethod: input.paymentMethod,
     paymentStatus: recordAsPaid ? "PAID" : "PENDING",
     serviceHourType: input.serviceHourType,

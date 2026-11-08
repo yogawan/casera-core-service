@@ -1,11 +1,15 @@
 // @/services/transactionService.test.ts
 //
-// Behavior tests for loyalty-point reversal on cancellation (§5.3): a
-// cancelled transaction that was PAID must have its pointsEarned subtracted
-// back from the customer, exactly once. The cancel transition itself uses
-// an atomic, conditional findOneAndUpdate (not read-modify-write) so it
-// can't race a concurrent Midtrans webhook settling the same transaction —
-// see services/paymentService.test.ts for the symmetric webhook-side test.
+// Two focuses:
+// 1. Loyalty-point reversal on cancellation (§5.3): a cancelled transaction
+//    that was PAID must have its pointsEarned subtracted back from the
+//    customer, exactly once. The cancel transition itself uses an atomic,
+//    conditional findOneAndUpdate (not read-modify-write) so it can't race
+//    a concurrent Midtrans webhook settling the same transaction — see
+//    services/paymentService.test.ts for the symmetric webhook-side test.
+// 2. createTransaction's employee validation (§5.5/§5.13, PLAN-GROOMA.md
+//    Phase 10): employeeId must resolve to an ACTIVE Employee in the same
+//    branch as the transaction, or creation is refused outright.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionUser } from "@/lib/auth";
@@ -69,11 +73,16 @@ const transactionFindOneAndUpdate = vi.fn((...args: unknown[]) => {
   return Promise.resolve(options?.new ? after : before);
 });
 
+const transactionExists = vi.fn();
+const transactionCreate = vi.fn();
+
 vi.mock("@/models/Transaction", () => ({
   default: {
     findById: (...args: unknown[]) => transactionFindById(...args),
     findOneAndUpdate: (...args: unknown[]) =>
       transactionFindOneAndUpdate(...args),
+    exists: (...args: unknown[]) => transactionExists(...args),
+    create: (...args: unknown[]) => transactionCreate(...args),
   },
 }));
 
@@ -84,7 +93,39 @@ vi.mock("@/services/customerService", () => ({
   creditLoyaltyPoints: (...args: unknown[]) => creditLoyaltyPoints(...args),
 }));
 
-const { cancelTransaction } = await import("@/services/transactionService");
+// createTransaction's own dependencies — not needed by the pre-existing
+// cancelTransaction tests above, only by the employee-validation tests
+// below (which stick to paymentMethod CASH and no customerId, so neither
+// the QRIS/payment path nor @/models/Customer is ever reached).
+const branchFindById = vi.fn();
+vi.mock("@/models/Branch", () => ({
+  default: { findById: (...args: unknown[]) => branchFindById(...args) },
+}));
+
+// PRD §5.14: Service is replaced by five category models. basePayload only
+// ever sets haircutId, so Haircut is mocked unconditionally; Shaving is
+// mocked too for the multi-category tests below (set haircutId + shavingId
+// together). Treatment/Colouring/Chemical are imported for real by
+// transactionService.ts but their findById is never reached by any payload
+// in this file.
+const haircutFindById = vi.fn();
+vi.mock("@/models/Haircut", () => ({
+  default: { findById: (...args: unknown[]) => haircutFindById(...args) },
+}));
+
+const shavingFindById = vi.fn();
+vi.mock("@/models/Shaving", () => ({
+  default: { findById: (...args: unknown[]) => shavingFindById(...args) },
+}));
+
+const employeeFindById = vi.fn();
+vi.mock("@/models/Employee", () => ({
+  default: { findById: (...args: unknown[]) => employeeFindById(...args) },
+}));
+
+const { cancelTransaction, createTransaction } = await import(
+  "@/services/transactionService"
+);
 
 const HOST: SessionUser = {
   id: "host-1",
@@ -92,6 +133,15 @@ const HOST: SessionUser = {
   name: "Host",
   role: "HOST",
   branch: null,
+  status: "ACTIVE",
+};
+
+const AGENT: SessionUser = {
+  id: "agent-1",
+  username: "agent",
+  name: "Agent",
+  role: "AGENT",
+  branch: "branch-1",
   status: "ACTIVE",
 };
 
@@ -210,5 +260,169 @@ describe("cancelTransaction loyalty point reversal", () => {
     );
     expect(reverseLoyaltyPoints).not.toHaveBeenCalled();
     expect(store[0].transactionStatus).toBe("COMPLETED");
+  });
+});
+
+describe("createTransaction employee validation", () => {
+  // CASH + no customerId + no idempotencyKey so the only paths exercised
+  // are branch/category/employee resolution and the final create() call —
+  // the QRIS/payment and idempotency branches are untouched by this suite.
+  const basePayload = {
+    haircutId: "haircut-1",
+    employeeId: "employee-1",
+    paymentMethod: "CASH" as const,
+    discountAmount: 0,
+    serviceHourType: "REGULAR" as const,
+  };
+
+  beforeEach(() => {
+    branchFindById.mockResolvedValue({
+      _id: "branch-1",
+      status: "ACTIVE",
+      timezone: "Asia/Jakarta",
+    });
+    haircutFindById.mockResolvedValue({
+      _id: "haircut-1",
+      name: "Haircut",
+      price: 50000,
+      revenueSharing: { ownerPercentage: 50, employeePercentage: 50 },
+    });
+    transactionExists.mockResolvedValue(false);
+    transactionCreate.mockImplementation((data: Record<string, unknown>) =>
+      Promise.resolve({ _id: "new-txn-1", ...data }),
+    );
+  });
+
+  it("creates the transaction with the resolved employee when it is ACTIVE and in the same branch", async () => {
+    employeeFindById.mockResolvedValue({
+      _id: "employee-1",
+      employmentStatus: "ACTIVE",
+      branch: "branch-1",
+    });
+
+    await createTransaction(AGENT, basePayload);
+
+    expect(transactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ employee: "employee-1" }),
+    );
+  });
+
+  it("rejects when the employee does not exist", async () => {
+    employeeFindById.mockResolvedValue(null);
+
+    await expect(createTransaction(AGENT, basePayload)).rejects.toThrow(
+      /Employee is not available/,
+    );
+    expect(transactionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the employee is not ACTIVE", async () => {
+    employeeFindById.mockResolvedValue({
+      _id: "employee-1",
+      employmentStatus: "RESIGNED",
+      branch: "branch-1",
+    });
+
+    await expect(createTransaction(AGENT, basePayload)).rejects.toThrow(
+      /Employee is not available/,
+    );
+    expect(transactionCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the employee belongs to a different branch", async () => {
+    employeeFindById.mockResolvedValue({
+      _id: "employee-1",
+      employmentStatus: "ACTIVE",
+      branch: "branch-2",
+    });
+
+    await expect(createTransaction(AGENT, basePayload)).rejects.toThrow(
+      /Employee is not available/,
+    );
+    expect(transactionCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe("createTransaction category resolution", () => {
+  const basePayload = {
+    haircutId: "haircut-1",
+    employeeId: "employee-1",
+    paymentMethod: "CASH" as const,
+    discountAmount: 0,
+    serviceHourType: "REGULAR" as const,
+  };
+
+  beforeEach(() => {
+    branchFindById.mockResolvedValue({
+      _id: "branch-1",
+      status: "ACTIVE",
+      timezone: "Asia/Jakarta",
+    });
+    haircutFindById.mockResolvedValue({
+      _id: "haircut-1",
+      name: "Haircut",
+      price: 50000,
+      revenueSharing: { ownerPercentage: 50, employeePercentage: 50 },
+    });
+    employeeFindById.mockResolvedValue({
+      _id: "employee-1",
+      employmentStatus: "ACTIVE",
+      branch: "branch-1",
+    });
+    transactionExists.mockResolvedValue(false);
+    transactionCreate.mockImplementation((data: Record<string, unknown>) =>
+      Promise.resolve({ _id: "new-txn-1", ...data }),
+    );
+  });
+
+  it("with exactly one category, sets only that ref/snapshot pair and uses the single-category formula", async () => {
+    await createTransaction(AGENT, basePayload);
+
+    expect(transactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        haircut: "haircut-1",
+        haircutSnapshot: expect.objectContaining({ name: "Haircut" }),
+        subtotal: 50000,
+        total: 50000,
+        ownerRevenue: 25000,
+        employeeRevenue: 25000,
+      }),
+    );
+    expect(shavingFindById).not.toHaveBeenCalled();
+  });
+
+  it("with two categories, sets both ref/snapshot pairs and sums subtotal across them", async () => {
+    shavingFindById.mockResolvedValue({
+      _id: "shaving-1",
+      name: "Shaving",
+      price: 30000,
+      revenueSharing: { ownerPercentage: 60, employeePercentage: 40 },
+    });
+
+    await createTransaction(AGENT, {
+      ...basePayload,
+      shavingId: "shaving-1",
+    });
+
+    expect(transactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        haircut: "haircut-1",
+        shaving: "shaving-1",
+        subtotal: 80000,
+        total: 80000,
+        // haircut: 50% of 50,000 = 25,000. shaving: 60% of 30,000 = 18,000.
+        ownerRevenue: 25000 + 18000,
+        employeeRevenue: 25000 + 12000,
+      }),
+    );
+  });
+
+  it("rejects when a requested category id does not resolve to a document", async () => {
+    shavingFindById.mockResolvedValue(null);
+
+    await expect(
+      createTransaction(AGENT, { ...basePayload, shavingId: "missing-1" }),
+    ).rejects.toThrow(/Shaving is not available/);
+    expect(transactionCreate).not.toHaveBeenCalled();
   });
 });
