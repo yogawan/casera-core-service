@@ -35,6 +35,46 @@ export function computeServicePricing(
   return { subtotal, discountAmount, total, ownerRevenue, employeeRevenue };
 }
 
+// §5.14: a transaction may fill more than one of the five category refs
+// (haircut/shaving/treatment/colouring/chemical) at once. Each category's
+// revenue split is computed independently from its own GROSS price — never
+// a blended percentage across categories — then summed. discountAmount is
+// subtracted only once, from the summed total, never redistributed back
+// into the per-category split. Confirmed 2026-11-08, deliberately scoped to
+// the >1-category path only: computeServicePricing above is untouched and
+// still used whenever exactly one category is filled, so the common
+// single-category case keeps ownerRevenue + employeeRevenue === total
+// exactly. That invariant does NOT hold here once discountAmount > 0 — an
+// accepted tradeoff for the multi-category case, not a bug.
+export function computeMultiCategoryPricing(
+  categories: PricedService[],
+  discountAmount: number,
+) {
+  const subtotal = categories.reduce(
+    (sum, category) => sum + category.price,
+    0,
+  );
+  if (discountAmount > subtotal) {
+    throw Errors.businessRule(
+      "Discount cannot exceed the combined category price.",
+    );
+  }
+
+  const total = subtotal - discountAmount;
+
+  let ownerRevenue = 0;
+  let employeeRevenue = 0;
+  for (const category of categories) {
+    const lineOwnerRevenue = roundCurrency(
+      category.price * (category.revenueSharing.ownerPercentage / 100),
+    );
+    ownerRevenue += lineOwnerRevenue;
+    employeeRevenue += category.price - lineOwnerRevenue;
+  }
+
+  return { subtotal, discountAmount, total, ownerRevenue, employeeRevenue };
+}
+
 // 1,000 IDR = 1 point, floor-rounded (§5.3) — basis is `total` (post-discount,
 // what the customer actually paid), matching ownerRevenue/employeeRevenue's
 // own basis above. Shared by transaction creation (CASH/SELF_RECORDED, paid
