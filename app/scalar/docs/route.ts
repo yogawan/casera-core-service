@@ -6,16 +6,20 @@ import { info, security, servers, tags } from "./_config";
 import { responses, schemas, securitySchemes } from "./_schemas";
 import { authPaths } from "./paths/auth";
 import { branchPaths } from "./paths/branches";
+import { chemicalPaths } from "./paths/chemicals";
+import { colouringPaths } from "./paths/colourings";
 import { customerPaths } from "./paths/customers";
 import { dashboardPaths } from "./paths/dashboard";
+import { haircutPaths } from "./paths/haircuts";
 import { internalPaths } from "./paths/internal";
 import { inventoryPaths } from "./paths/inventory";
 import { paymentPaths } from "./paths/payments";
 import { profilePaths } from "./paths/profile";
-import { servicePaths } from "./paths/services";
+import { shavingPaths } from "./paths/shavings";
 import { subscriptionPaths } from "./paths/subscription";
 import { transactionChangeRequestPaths } from "./paths/transactionChangeRequests";
 import { transactionPaths } from "./paths/transactions";
+import { treatmentPaths } from "./paths/treatments";
 import { userPaths } from "./paths/users";
 
 const specHandler = ApiReference({
@@ -33,7 +37,11 @@ const specHandler = ApiReference({
       ...branchPaths,
       ...userPaths,
       ...customerPaths,
-      ...servicePaths,
+      ...haircutPaths,
+      ...shavingPaths,
+      ...treatmentPaths,
+      ...colouringPaths,
+      ...chemicalPaths,
       ...transactionPaths,
       ...transactionChangeRequestPaths,
       ...paymentPaths,

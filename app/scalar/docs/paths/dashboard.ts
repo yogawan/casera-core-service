@@ -148,7 +148,10 @@ export const dashboardPaths = {
     get: {
       tags: ["Dashboard"],
       operationId: "getDashboardServicePerformance",
-      summary: "Top 10 services by revenue for the period",
+      summary:
+        "Top services by revenue for the period, ranked across all five categories",
+      description:
+        "PRD §5.14: Service (one collection) is replaced by five category collections, each ranked independently then merged into one combined, revenue-sorted list — `category` on each row disambiguates which collection `_id` belongs to. `revenue` is each category document's own gross snapshot price (PAID-gated), never a discount-prorated figure. Capped (not paginated, see docs/PAGINATION-CONTRACT.md §6); `meta.limit`/`meta.total`/`meta.truncated` describe the cap.",
       parameters: baseDashboardParams,
       responses: {
         "200": {
@@ -167,12 +170,38 @@ export const dashboardPaths = {
                         items: {
                           type: "object",
                           properties: {
-                            _id: { type: "string", description: "Service id" },
+                            _id: {
+                              type: "string",
+                              description:
+                                "Haircut/Shaving/Treatment/Colouring/Chemical id — disambiguated by the category field below.",
+                            },
+                            category: {
+                              type: "string",
+                              enum: [
+                                "HAIRCUT",
+                                "SHAVING",
+                                "TREATMENT",
+                                "COLOURING",
+                                "CHEMICAL",
+                              ],
+                            },
                             serviceName: { type: "string" },
                             count: { type: "integer" },
                             revenue: { type: "number" },
                             avgOrderValue: { type: "number" },
                           },
+                        },
+                      },
+                      meta: {
+                        type: "object",
+                        properties: {
+                          limit: { type: "integer" },
+                          total: {
+                            type: "integer",
+                            description:
+                              "Untruncated count across all five categories combined.",
+                          },
+                          truncated: { type: "boolean" },
                         },
                       },
                     },

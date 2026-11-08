@@ -125,7 +125,7 @@ export const transactionPaths = {
       operationId: "createTransaction",
       summary: "Create a transaction (AGENT only — HOST cannot create sales)",
       description:
-        "agent/branch come from the session, never the request body. Price and revenue split are computed server-side from the Service's current price, never trusted from the client. CASH is paymentStatus=PAID immediately; QRIS stays PENDING and a Payment is created inline — if the Midtrans charge call fails, the transaction is still created and `paymentError` describes the failure so the client can retry via POST /payments/qris.",
+        "agent/branch come from the session, never the request body. Price and revenue split are computed server-side from the chosen category documents' current price, never trusted from the client. At least one of haircutId/shavingId/treatmentId/colouringId/chemicalId is required — up to all five may be set at once (never more than one per category). Exactly one category filled uses the original single-category formula (ownerRevenue split from the post-discount total); more than one switches to a gross-per-category formula where discountAmount only reduces `total`, never ownerRevenue/employeeRevenue. CASH is paymentStatus=PAID immediately; QRIS stays PENDING and a Payment is created inline — if the Midtrans charge call fails, the transaction is still created and `paymentError` describes the failure so the client can retry via POST /payments/qris.",
       requestBody: {
         required: true,
         content: {
@@ -134,7 +134,20 @@ export const transactionPaths = {
               type: "object",
               properties: {
                 customerId: { type: "string" },
-                serviceId: { type: "string" },
+                haircutId: { type: "string" },
+                shavingId: { type: "string" },
+                treatmentId: { type: "string" },
+                colouringId: { type: "string" },
+                chemicalId: {
+                  type: "string",
+                  description:
+                    "At least one of haircutId/shavingId/treatmentId/colouringId/chemicalId is required; any combination of the five may be set together.",
+                },
+                employeeId: {
+                  type: "string",
+                  description:
+                    "Who performed the service — distinct from the agent (session). Must resolve to an Employee that is employmentStatus=ACTIVE and in the same branch as this transaction.",
+                },
                 paymentMethod: { type: "string", enum: ["CASH", "QRIS"] },
                 discountAmount: { type: "number", minimum: 0, default: 0 },
                 serviceHourType: {
@@ -145,7 +158,7 @@ export const transactionPaths = {
                     "Stored for reporting only — does not affect pricing.",
                 },
               },
-              required: ["serviceId", "paymentMethod"],
+              required: ["employeeId", "paymentMethod"],
             },
           },
         },
@@ -190,7 +203,7 @@ export const transactionPaths = {
         "403": { description: "Not AGENT" },
         "422": {
           description:
-            "Agent has no assigned branch, branch inactive, service unavailable, or customer unavailable",
+            "Agent has no assigned branch, branch inactive, a requested category document unavailable, employee unavailable, or customer unavailable",
         },
       },
     },
@@ -288,7 +301,7 @@ export const transactionPaths = {
       operationId: "submitChangeRequest",
       summary: "Submit a change request against a transaction (HOST/AGENT)",
       description:
-        "Only serviceId, customerId, discountAmount, and serviceHourType can be requested — paymentMethod and status fields are deliberately excluded. Only one PENDING request is allowed per transaction at a time.",
+        "Only haircutId/shavingId/treatmentId/colouringId/chemicalId, customerId, discountAmount, and serviceHourType can be requested — paymentMethod and status fields are deliberately excluded. Each category id sets/changes that one category on the transaction; categories not mentioned are left untouched. Only one PENDING request is allowed per transaction at a time.",
       parameters: [idParam],
       requestBody: {
         required: true,
@@ -302,7 +315,11 @@ export const transactionPaths = {
                   type: "object",
                   description: "At least one key is required.",
                   properties: {
-                    serviceId: { type: "string" },
+                    haircutId: { type: "string" },
+                    shavingId: { type: "string" },
+                    treatmentId: { type: "string" },
+                    colouringId: { type: "string" },
+                    chemicalId: { type: "string" },
                     customerId: { type: "string", nullable: true },
                     discountAmount: { type: "number", minimum: 0 },
                     serviceHourType: {
@@ -331,7 +348,9 @@ export const transactionPaths = {
           description:
             "Transaction is CANCELLED, or a PENDING change request already exists",
         },
-        "422": { description: "Requested service/customer is not available" },
+        "422": {
+          description: "Requested category document/customer is not available",
+        },
       },
     },
   },

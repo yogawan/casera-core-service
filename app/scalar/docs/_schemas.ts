@@ -158,61 +158,43 @@ export const User = {
   },
 };
 
-// services/customerService.ts runs every response through serializeCustomer().
-// email/gender/birthDate/address/notes are present only when the caller's
-// role is HOST — an AGENT response simply omits these five keys.
+// PRD §5.3 (narrowed 2026-11-08): customerCode/email/gender/birthDate/
+// address/notes/customerType/lastVisitAt no longer exist on the model.
+// Replaced by cityFrom/age/busyness — all visible to both HOST and AGENT,
+// there is no role-gated field left on Customer at all (services/
+// customerService.ts's serializeCustomer() no longer branches on role).
 export const Customer = {
   type: "object",
   properties: {
     id: { type: "string" },
-    customerCode: { type: "string", nullable: true },
     name: { type: "string" },
+    cityFrom: { type: "string", nullable: true },
+    age: { type: "integer", nullable: true, minimum: 0 },
+    busyness: {
+      type: "string",
+      nullable: true,
+      description: "Free text — descriptive, not an enum.",
+    },
     phone: { type: "string", nullable: true },
-    customerType: { type: "string", enum: ["DECOY", "REGULAR"] },
     loyaltyPoints: { type: "integer" },
-    lastVisitAt: { type: "string", format: "date-time", nullable: true },
     isActive: { type: "boolean" },
-    email: {
-      type: "string",
-      nullable: true,
-      description: "HOST only — omitted entirely in an AGENT response.",
-    },
-    gender: {
-      type: "string",
-      enum: ["MALE", "FEMALE", "OTHER", "UNSPECIFIED"],
-      description: "HOST only — omitted entirely in an AGENT response.",
-    },
-    birthDate: {
-      type: "string",
-      format: "date-time",
-      nullable: true,
-      description: "HOST only — omitted entirely in an AGENT response.",
-    },
-    address: {
-      type: "string",
-      nullable: true,
-      description: "HOST only — omitted entirely in an AGENT response.",
-    },
-    notes: {
-      type: "string",
-      nullable: true,
-      description: "HOST only — omitted entirely in an AGENT response.",
-    },
     createdAt: { type: "string", format: "date-time" },
     updatedAt: { type: "string", format: "date-time" },
   },
 };
 
-export const Service = {
+// PRD §5.14: Service (single catalog, serviceCode/description/
+// durationMinutes/isActive) is replaced by five category collections —
+// Haircut, Shaving, Treatment, Colouring, Chemical. All five share this
+// exact shape; only the revenueSharing defaults differ per category
+// (Haircut/Shaving/Treatment 50/50, Colouring/Chemical 60/40 — still
+// editable per document, not locked).
+const categorySchema = {
   type: "object",
   properties: {
     _id: { type: "string" },
-    serviceCode: { type: "string" },
     name: { type: "string" },
-    description: { type: "string", nullable: true },
-    category: { type: "string", nullable: true },
     price: { type: "number" },
-    durationMinutes: { type: "integer" },
     revenueSharing: {
       type: "object",
       description: "ownerPercentage + employeePercentage always sum to 100.",
@@ -221,9 +203,30 @@ export const Service = {
         employeePercentage: { type: "number" },
       },
     },
-    isActive: { type: "boolean" },
-    createdAt: { type: "string", format: "date-time" },
-    updatedAt: { type: "string", format: "date-time" },
+    timestamp: { type: "string", format: "date-time" },
+  },
+};
+
+export const Haircut = categorySchema;
+export const Shaving = categorySchema;
+export const Treatment = categorySchema;
+export const Colouring = categorySchema;
+export const Chemical = categorySchema;
+
+// Shared shape for Transaction.{haircut,shaving,treatment,colouring,chemical}Snapshot
+// below — deliberately excludes quantity/total (PRD §5.14: their meaning on
+// the catalog documents themselves is unresolved, so nothing from them is
+// copied forward into transaction history).
+export const CategorySnapshot = {
+  type: "object",
+  nullable: true,
+  description:
+    "Null/absent when the corresponding category ref is unset on this transaction.",
+  properties: {
+    name: { type: "string" },
+    price: { type: "number" },
+    ownerPercentage: { type: "number" },
+    employeePercentage: { type: "number" },
   },
 };
 
@@ -238,24 +241,51 @@ export const Transaction = {
         "Populated as { _id, name } on list/detail/receipt endpoints (receipt also includes branchCode, address, phone).",
     },
     agent: { oneOf: [{ type: "string" }, UserRef] },
+    employee: {
+      type: "string",
+      description:
+        "Employee ObjectId (not populated) — who performed the service, distinct from agent.",
+    },
     customer: {
       oneOf: [{ type: "string" }, CustomerRef, { type: "null" }],
     },
-    service: {
+    // PRD §5.14: Service (one required ref) is replaced by five
+    // independent optional refs — a transaction fills 1 to 5 of these at
+    // once (never more than one document per category), with at least one
+    // required. Each *Snapshot is a point-in-time copy of
+    // {name, price, ownerPercentage, employeePercentage} from the chosen
+    // category document at creation time, so the transaction's own numbers
+    // never drift if that catalog entry changes later.
+    haircut: {
       type: "string",
-      description: "Service ObjectId (not populated).",
+      nullable: true,
+      description: "Haircut ObjectId (not populated), or null if unset.",
     },
-    serviceSnapshot: {
-      type: "object",
-      description:
-        "Price/revenue-split copied from Service at creation time — the transaction's own numbers never drift if the Service catalog changes later.",
-      properties: {
-        name: { type: "string" },
-        price: { type: "number" },
-        ownerPercentage: { type: "number" },
-        employeePercentage: { type: "number" },
-      },
+    haircutSnapshot: { $ref: "#/components/schemas/CategorySnapshot" },
+    shaving: {
+      type: "string",
+      nullable: true,
+      description: "Shaving ObjectId (not populated), or null if unset.",
     },
+    shavingSnapshot: { $ref: "#/components/schemas/CategorySnapshot" },
+    treatment: {
+      type: "string",
+      nullable: true,
+      description: "Treatment ObjectId (not populated), or null if unset.",
+    },
+    treatmentSnapshot: { $ref: "#/components/schemas/CategorySnapshot" },
+    colouring: {
+      type: "string",
+      nullable: true,
+      description: "Colouring ObjectId (not populated), or null if unset.",
+    },
+    colouringSnapshot: { $ref: "#/components/schemas/CategorySnapshot" },
+    chemical: {
+      type: "string",
+      nullable: true,
+      description: "Chemical ObjectId (not populated), or null if unset.",
+    },
+    chemicalSnapshot: { $ref: "#/components/schemas/CategorySnapshot" },
     paymentMethod: { type: "string", enum: ["CASH", "QRIS"] },
     paymentStatus: {
       type: "string",
@@ -291,7 +321,7 @@ export const Transaction = {
         requestedChanges: {
           type: "object",
           description:
-            "Subset of serviceId/customerId/discountAmount/serviceHourType that was requested.",
+            "Subset of haircutId/shavingId/treatmentId/colouringId/chemicalId/customerId/discountAmount/serviceHourType that was requested.",
         },
         reviewedBy: { oneOf: [{ type: "string" }, UserRef] },
         reviewNote: { type: "string" },
@@ -506,7 +536,12 @@ export const schemas = {
   Branch,
   User,
   Customer,
-  Service,
+  Haircut,
+  Shaving,
+  Treatment,
+  Colouring,
+  Chemical,
+  CategorySnapshot,
   Transaction,
   Payment,
   InventoryItem,
