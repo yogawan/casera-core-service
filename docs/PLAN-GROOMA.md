@@ -357,32 +357,152 @@ Independen dari Phase 2/4/5/6 — hanya butuh Phase 1 (auth) dan, untuk reuse `l
 
 ### Phase 9 — Keseragaman Pagination ⏳
 
-> **Status: dokumentasi selesai, kode belum disentuh.** Kontrak ditetapkan di `docs/PAGINATION-CONTRACT.md` (2026-10-19) atas dasar PRD §16 yang sudah diperluas. Audit yang mendasarinya memeriksa `app/api/v1/**`, `services/*.ts`, dan `validations/*.ts` secara langsung — bukan membaca dokumen audit sebelumnya, yang justru ternyata salah (lihat catatan terkoreksi di Phase 7).
+> **Status (diverifikasi ulang 2026-11-08): kode Tahap 1–3 sudah dieksekusi di hari yang sama dengan kontraknya, bukan "belum disentuh" seperti tertulis semula.** `docs/PAGINATION-CONTRACT.md` ditulis 2026-10-19; implementasinya menyusul di hari yang sama (commit `b8b8b02`, `d5a855b`, `49f9668`, pukul 03:21–03:22) tapi catatan status di dokumen itu maupun di sini tidak pernah di-refresh sesudahnya — pola drift yang sama seperti yang sudah dicatat di Phase 7. Dua item nyata masih belum dikerjakan (lihat Tahap 3): Scalar docs dan penghapusan field legacy.
 
-**Temuan dasar:** 4 dari 11 endpoint `GET` multi-baris memenuhi kontrak. Rinciannya di `docs/PAGINATION-CONTRACT.md` §7–§8.
+**Temuan dasar (sudah basi):** baris "4 dari 11" di bawah dan di `docs/PAGINATION-CONTRACT.md` §8 menggambarkan kondisi SEBELUM eksekusi kode. Hasil verifikasi langsung ke kode 2026-11-08: seluruh 11 endpoint di §7/§8 kontrak itu sudah sesuai secara fungsional — rincian per item ada di checklist di bawah.
 
 **Tahap 1 — perbaikan internal, tanpa dampak ke client:**
-- [ ] Tie-breaker `_id` pada `sort` kelima query paginated yang ada — pagination offset di atas kunci sort non-unik bisa melewatkan atau menduplikasi baris antar halaman (§4). Tidak satu pun dari kelimanya punya tie-breaker hari ini; `GET /inventory` paling rawan karena sort-nya `{ name: 1 }` dan nama item duplikat antar cabang itu normal
-- [ ] Teruskan `status` ke `listInvoicesBySubscription()` — parameter ini divalidasi di `subscriptionSchema.ts` lalu dibuang; `?status=PAID` membalas `200` berisi invoice semua status (§9.3)
-- [ ] Pindahkan validasi query ke sebelum early-return di `subscription/invoices`, dan pantulkan `page`/`limit` sebenarnya alih-alih hardcode `{ page: 1, limit: 20, ... }` (§9.2)
-- [ ] Satukan bentuk pagination ke satu helper di `lib/` supaya `pages` vs `totalPages` tidak bisa terulang
+- [x] Tie-breaker `_id` pada `sort` kelima query paginated yang ada — `stableSort()` (`lib/pagination.ts`) dipakai di `transactionService.listTransactions`, `approvalService.listPendingChangeRequests`, `inventoryService.listItems` + `listStockMovements`, dan `billingService.listInvoicesBySubscription`
+- [x] Teruskan `status` ke `listInvoicesBySubscription()` — fungsi ini sekarang menerima `query` penuh dan memfilter berdasarkan `status` bila dikirim; `?status=PAID` tidak lagi membalas invoice status lain
+- [x] Pindahkan validasi query ke sebelum early-return di `subscription/invoices`, dan pantulkan `page`/`limit` sebenarnya — `route.ts` mem-parse Zod dulu, baru cek `getSubscriptionByHostId`; early-return memakai `emptyInvoicePage(parsed.data)` alih-alih hardcode
+- [x] Satukan bentuk pagination ke satu helper di `lib/` — `lib/pagination.ts` (`paginationQueryFields`, `paginateQueries`, `buildPaginationMeta`, `stableSort`), sekarang dipakai oleh seluruh 9 service yang punya endpoint list
 
 **Tahap 2 — aditif, aman untuk klien lama:**
-- [ ] Kirim `totalPages` bersama `pages` dari `billingService.ts` (§9.1 — `totalPages` yang menang, 4 endpoint lawan 1)
-- [ ] Beri batas pada `/dashboard/agents` (tidak punya `$limit` sama sekali) dan pada jumlah bucket `byPeriod` di `/dashboard/revenue` (jumlah barisnya ditentukan `from`/`to` milik client)
-- [ ] Ekspos `limit` efektif pada `/dashboard/services` (cap 10) dan `/dashboard/inventory` (cap 20) — keduanya memotong hasil tanpa memberi tahu client
+- [x] Kirim `totalPages` bersama `pages` dari `billingService.ts` — `withLegacyPages()` mengembalikan keduanya; `pages` ditandai `@deprecated` di tipenya
+- [x] Beri batas pada `/dashboard/agents` (kini query param `limit`, default 50 maks 100, via `cappedFacet`) dan pada jumlah bucket `byPeriod` di `/dashboard/revenue` (`REVENUE_MAX_BUCKETS = 400`, divalidasi via `estimateRevenueBuckets()` + `.refine()` — rentang yang menghasilkan >400 bucket ditolak `400` sebelum sampai ke database)
+- [x] Ekspos `limit` efektif pada `/dashboard/services` (default 10, maks 50) dan `/dashboard/inventory` (default 20, maks 100) — keduanya sekarang mengembalikan `meta: { limit, total, truncated }` di response
 
 **Tahap 3 — mengubah jumlah baris yang diterima client, wajib dikoordinasikan:**
-- [ ] `page`/`limit` + schema query baru untuk `/customers`, lalu `/users`, `/services`, `/branches`. Belum ada `*QuerySchema` sama sekali untuk keempatnya; `/customers` bahkan membaca `search` langsung dari `searchParams` tanpa Zod
-- [ ] Perbarui `app/scalar/docs/paths/*.ts` untuk setiap endpoint yang berubah — spec itu hand-maintained, tidak ada yang menyinkronkannya otomatis
-- [ ] Hapus `pages` dan `PaginationAlt` setelah klien mobile bermigrasi
+- [x] `page`/`limit` + schema query baru untuk `/customers`, `/users`, `/services`, `/branches` — `listCustomersQuerySchema`, `listUsersQuerySchema`, `listServicesQuerySchema`, `listBranchesQuerySchema` semuanya spread `paginationQueryFields`; keempat service + route sudah terhubung dan `customers` tidak lagi membaca `search` manual dari `searchParams`
+- [ ] Perbarui `app/scalar/docs/paths/*.ts` untuk setiap endpoint yang berubah — **belum dikerjakan.** `customers.ts`/`users.ts`/`services.ts`/`branches.ts` masih tidak mendokumentasikan `page`/`limit`/response `pagination`; `dashboard.ts` belum mendokumentasikan `meta`/cap yang baru. Spec Scalar sekarang drift dari kode yang sebenarnya berjalan — pola yang sama dengan catatan "Grooma Scalar docs drift" di memory
+- [ ] Hapus `pages` dan `PaginationAlt` setelah klien mobile bermigrasi — **sengaja belum dikerjakan**, menunggu konfirmasi bahwa build Flutter sudah berpindah ke `totalPages`; `pages`/`PaginationAlt` masih ada di `billingService.ts` dan `app/scalar/docs/_schemas.ts`
 
-**Koordinasi klien mobile — tahap terpisah atas instruksi user:**
-- [ ] `docs/integration-to-mobile-flutter/` **sengaja belum disentuh.** Penambahan `data.pagination` bersifat aditif dan tidak memecahkan klien lama, tapi kemunculan `limit` default **memecahkan**: client yang hari ini menerima seluruh daftar customer besok hanya menerima 20 baris. Tahap 3 tidak boleh dirilis sebelum dokumen ini dan build mobile-nya diselaraskan
+**Koordinasi klien mobile:**
+- [x] `docs/integration-to-mobile-flutter/` **sudah diperbarui** (commit `93aeffa`, `4385278`, 2026-10-19 — hari yang sama dengan eksekusi kode, bukan tahap menunggu seperti tertulis semula). `AUTH-MOBILE-API-INTEGRATION.md` §2.1 jadi kontrak pagination bersama yang dirujuk 7 dokumen modul lain; breaking change `limit` default ditandai eksplisit di tiap modul (contoh, `CUSTOMER-MOBILE-API-INTEGRATION.md` §2: *"Layar yang dulu menerima seluruh basis customer sekarang menerima 20 pertama tanpa error apa pun"*). Yang **belum** diverifikasi dari sisi backend ini: apakah build Flutter-nya sendiri sudah mengonsumsi bentuk baru ini — itu prasyarat untuk item penghapusan `pages`/`PaginationAlt` di Tahap 3 di atas
 
-**Verifikasi:** `tsc --noEmit`, `vitest run` (baseline all-green — kegagalan apa pun adalah regresi), `next build`, `biome check` discope ke file tersentuh.
+**Verifikasi (dijalankan ulang 2026-11-08):** `vitest run` → 377/377 pass, all-green, termasuk `lib/pagination.test.ts` (84 test) dan `validations/dashboardSchema.test.ts` (18 test). `biome check` bersih di seluruh service/validation/route yang disentuh Phase 9. `tsc --noEmit` menunjukkan error di `.next/types/validator.ts` soal `app/page.tsx` — berasal dari penghapusan file itu di komit tidak terkait (`fdb580d`), bukan dari kode pagination. `next build` gagal di `Can't resolve 'tw-animate-css'` — dependency styling WIP yang belum terpasang, juga tidak terkait pagination. Kedua kegagalan ini pre-existing dan di luar scope Phase 9.
 
-**Exit criteria:** seluruh endpoint di `docs/PAGINATION-CONTRACT.md` §7 masuk kolom "sesuai kontrak", dan §8 membaca 11 dari 11.
+**Exit criteria:** seluruh endpoint di `docs/PAGINATION-CONTRACT.md` §7 masuk kolom "sesuai kontrak", dan §8 membaca 11 dari 11. **Tercapai secara kode** (2026-11-08), tapi `docs/PAGINATION-CONTRACT.md` §7–§8 sendiri belum di-refresh untuk menyatakan itu — masih membaca "4 dari 11" di teksnya. Dua item dokumentasi/koordinasi di Tahap 3 (Scalar paths, penghapusan field legacy pasca-migrasi mobile) tetap open.
+
+---
+
+### Phase 10 — `Transaction.employee` Wajib ⏳
+
+> **Status (diverifikasi & dieksekusi 2026-11-08): Models/Validations/Services selesai di kode. Satu prasyarat operasional masih pending — lihat di bawah.** Keputusan baru (2026-11-06): setiap transaksi baru wajib mencatat `employee` (ref `Employee`) yang mengerjakan servis, terpisah dari `agent` yang mencatat siapa yang memproses transaksi di kasir. Instruksi eksplisit user untuk putaran sebelumnya adalah docs dulu, kode menyusul — permintaan eksekusi kode datang terpisah pada 2026-11-08 dan checklist di bawah mencatat hasilnya.
+
+**Prasyarat blocking — harus selesai sebelum deploy ke data nyata:**
+- [x] Backfill `Employee` record untuk setiap `User` berrole `AGENT` yang sudah ada. **Dijalankan 2026-11-08** (`npm run backfill:employees`, terhadap database deployment ini, setelah konfirmasi eksplisit dari user karena menulis ke database live): 1 `User` berrole `AGENT` ditemukan, 1 `Employee` dibuat (`employmentStatus: ACTIVE`), 0 dilewati. Script (`scripts/backfillEmployeeRecords.ts`) tetap idempotent untuk dijalankan ulang jika ada `AGENT` baru yang dibuat lewat jalur lain (mis. restore data) tanpa `Employee` pasangannya.
+
+**Models:**
+- [x] `models/Transaction.ts` — field `employee` (`Schema.Types.ObjectId`, `ref: "Employee"`, `required: true`), terpisah dari `agent` yang tidak diubah. Index `{ employee: 1, createdAt: -1 }` sudah ada dari sebelumnya (ditambahkan preemptif saat field masih opsional).
+
+**Validations:**
+- [x] `validations/transactionSchema.ts` — `employeeId` wajib pada schema create, ditempatkan setelah `serviceId` sesuai urutan contoh request PRD §8.3. (Nama file sebenarnya `transactionSchema.ts`, bukan `transaction.schema.ts` — checklist sebelumnya salah ketik; konvensi penamaan repo ini camelCase tanpa titik, lihat `userSchema.ts`/`customerSchema.ts` dkk.)
+
+**Services:**
+- [x] `services/transactionService.ts` — `createTransaction` memvalidasi `employeeId` merujuk ke `Employee` yang ada, `employmentStatus: ACTIVE`, dan `branch` yang sama dengan transaksi (dibandingkan via `extractRefId`, pola yang sama dipakai field ref lain di file ini), sebelum menyimpan `employee` pada dokumen `Transaction` yang dibuat.
+
+**Scalar docs (tidak masuk checklist Phase 10 semula, disinkronkan sekalian karena endpoint yang sama persis disentuh):**
+- [x] `app/scalar/docs/paths/transactions.ts` — tambah `employeeId` ke request body POST /transactions dan ke `required`.
+- [x] `app/scalar/docs/_schemas.ts` — tambah field `employee` pada schema response `Transaction`.
+
+**Tests:**
+- [x] `validations/transactionSchema.test.ts` — `employeeId` ditambahkan ke `validPayload`, plus test "should require employeeId".
+- [x] `services/transactionService.test.ts` — describe block baru "createTransaction employee validation" (4 test: happy path, employee tidak ada, employee tidak ACTIVE, employee beda cabang).
+
+**Dampak lanjutan yang sengaja belum diputuskan (revisit saat implementasi, jangan diasumsikan) — masih terbuka, tidak disentuh putaran ini:**
+- Apakah `employee` bisa dikoreksi lewat `changeRequest` (§10) seperti `serviceId`/`discountAmount`? Whitelist hari ini tidak menyertakannya.
+- Apakah `GET /transactions` perlu filter `employeeId` untuk HOST, setara filter `agent` yang sudah ada (§7.7)?
+- Apakah dashboard agent performance (§12.3) perlu pecah jadi per-`employee` juga?
+
+**Koordinasi klien mobile — tahap terpisah atas instruksi user (pola yang sama dengan Phase 9):**
+- [ ] `docs/integration-to-mobile-flutter/TRANSACTION-MOBILE-API-INTEGRATION.md` **sengaja masih belum disentuh.** `employeeId` wajib di request body adalah breaking change untuk client yang sudah ada — perlu diselaraskan dengan build mobile sebelum dirilis.
+
+**Verifikasi (dijalankan 2026-11-08):** `vitest run` → 382/382 pass, all-green (naik dari baseline 377 — 5 test baru ditambahkan di atas, nol regresi). `biome check` bersih di seluruh file tersentuh (`models/Transaction.ts`, `validations/transactionSchema.ts`(`.test.ts`), `services/transactionService.ts`(`.test.ts`), `scripts/backfillEmployeeRecords.ts`, `app/scalar/docs/paths/transactions.ts`, `app/scalar/docs/_schemas.ts`, `package.json`). `tsc --noEmit` menunjukkan error pre-existing yang sama dengan catatan Phase 9 (`.next/types/validator.ts` soal `app/page.tsx`, dari komit `fdb580d`) — tidak ada error baru dari perubahan Phase 10. `next build` gagal di `Can't resolve 'tw-animate-css'`, pre-existing yang sama dengan catatan Phase 9, tidak terkait Phase 10.
+
+**Exit criteria:** kode "Models"/"Validations"/"Services" selesai dan terverifikasi, dan prasyarat backfill sudah dijalankan — **tercapai untuk sisi backend** (2026-11-08). Satu item tetap sengaja open: koordinasi klien mobile (`TRANSACTION-MOBILE-API-INTEGRATION.md`) menunggu tahap terpisah, sama seperti Phase 9.
+
+---
+
+### Phase 11 — Kategori Servis: Haircut, Shaving, Treatment, Colouring, Chemical ✅
+
+> **Status (dieksekusi 2026-11-08): kode penuh.** Lima keputusan terbuka yang tercatat di ronde sebelumnya (quantity/total, rumus akumulasi, migrasi data, field yang dibawa balik, whitelist `changeRequest`) dijawab semua oleh user dalam sesi yang sama, dengan satu koreksi signifikan terhadap keputusan 2026-11-06: **`quantity`/`total` ternyata dikonfirmasi TIDAK ada di kelima model** (bukan "belum didefinisikan maknanya" seperti dicatat sebelumnya) — field itu dihapus total dari `models/{Haircut,Shaving,Treatment,Colouring,Chemical}.ts`. Dengan koreksi itu, kelima model menjadi katalog reusable sederhana (mirip `Service` lama, minus `serviceCode`/`description`/`durationMinutes`/`isActive`), bukan line-item sekali-pakai seperti yang dikhawatirkan saat tension "AGENT mengisi quantity" vs "Service adalah katalog HOST-managed" muncul — lihat catatan di memory project untuk kronologi lengkap klarifikasi ini.
+>
+> Setelah kelima keputusan final, eksekusi kode mencakup: validations+services+routes CRUD untuk kelima model (meniru pola `Service` minus status toggle), migrasi penuh `models/Transaction.ts` (lima ref+snapshot opsional + invarian "minimal satu terisi"), migrasi `validations/transactionSchema.ts` + `services/transactionService.ts` (resolusi kategori + pemilihan formula pricing), migrasi `validations/approvalSchema.ts` + `services/approvalService.ts` (whitelist + re-kalkulasi saat approve), redesain `services/dashboardService.ts#getServicePerformance` (ranking gabungan lintas 5 kategori), penghapusan total `models/Service.ts`/`services/serviceService.ts`/`validations/serviceSchema.ts`/`app/api/v1/services/*`, skrip migrasi data (`scripts/migrateServiceToCategories.ts`, belum dijalankan), update Scalar docs penuh, dan perbaikan file yang terdampak collateral (`scripts/seedChangeRequests.ts`, `lib/pagination.test.ts`, test suite terkait).
+
+**Sudah diputuskan (2026-11-06) — spek awal, lihat PRD §5.4, §5.14:**
+- CRUD `Service` **dihapus** (bukan sekadar digantikan/dipertahankan paralel) oleh CRUD kelima model kategori — keputusan final, alasan eksplisit: lima collection pengganti sudah ada.
+- `Transaction` menyimpan referensi langsung ke kelima model: field `haircut`/`shaving`/`treatment`/`colouring`/`chemical` (masing-masing opsional, ref sesuai nama) + `*Snapshot` pasangannya (`{name, price, ownerPercentage, employeePercentage}`). Maksimal satu dokumen per kategori per transaksi (bukan array); minimal satu dari lima wajib terisi.
+
+**Keputusan final (2026-11-08) — menyelesaikan lima item yang sebelumnya tercatat terbuka:**
+- [x] **Quantity/total**: dikonfirmasi TIDAK ADA — dihapus dari kelima model (koreksi terhadap spek 2026-11-06 yang sempat mencantumkannya). Setiap kategori menyumbang `price`-nya langsung (bukan `price × quantity`) ke kalkulasi Transaction.
+- [x] **Rumus akumulasi lintas-kategori**: tepat satu kategori terisi → formula `computeServicePricing` lama, tidak berubah (`ownerRevenue+employeeRevenue == total` tetap terjaga). Lebih dari satu kategori terisi → fungsi baru `computeMultiCategoryPricing` (`lib/utils.ts`): setiap kategori hitung sendiri dari harga kotornya, `discountAmount` hanya dikurangi dari `total` akhir, **tidak** didistribusikan ke `ownerRevenue`/`employeeRevenue` — invarian lama sengaja tidak dipertahankan untuk kasus ini, dikonfirmasi eksplisit lewat `AskUserQuestion` dua tahap (termasuk klarifikasi scope: hanya berlaku saat >1 kategori, transaksi 1-kategori tidak terdampak sama sekali).
+- [x] **Migrasi data `Service`**: berdasarkan field `category` existing, case-insensitive match ke salah satu dari lima nama. `scripts/migrateServiceToCategories.ts` ditulis (dry-run default, `--fix` untuk apply, idempoten by-name, melaporkan `category` yang tidak cocok sebagai unmapped tanpa menebak) — **belum dijalankan terhadap database manapun**, menunggu konfirmasi eksplisit seperti skrip migrasi lain di proyek ini.
+- [x] **Field yang dibawa balik (`serviceCode`/`description`/`durationMinutes`/`isActive`)**: tidak ada yang ditambahkan — `Service` dikonfirmasi tidak dibutuhkan lagi sepenuhnya.
+- [x] **`changeRequest.requestedChanges` whitelist**: `serviceId` diganti lima field opsional (`haircutId`/`shavingId`/`treatmentId`/`colouringId`/`chemicalId`). `approveChangeRequest` di-generalisasi: tiap kategori yang diubah divalidasi ulang (live, bukan dari snapshot lama), kategori yang tidak disebutkan tapi sudah ada di transaksi tetap di-refetch live untuk re-kalkulasi — lalu seluruh field finansial dihitung ulang dengan rumus yang sama seperti `createTransaction`.
+
+**Model, validasi, service, routes (dieksekusi 2026-11-08):**
+- [x] `models/{Haircut,Shaving,Treatment,Colouring,Chemical}.ts` — `quantity`/`total` dihapus; hook `pre("validate")` sum-100% (ditambahkan ronde sebelumnya) tetap ada.
+- [x] `validations/{haircut,shaving,treatment,colouring,chemical}Schema.ts` — create/update/list, `revenueSharing` opsional pada create (fallback ke default model).
+- [x] `services/{haircut,shaving,treatment,colouring,chemical}Service.ts` — CRUD, tanpa status-toggle (tidak ada `isActive`).
+- [x] `app/api/v1/{haircuts,shavings,treatments,colourings,chemicals}/route.ts` + `[id]/route.ts` — GET list/detail (HOST+AGENT), POST create + PATCH update (HOST only), tanpa `/status` sub-route.
+
+**Migrasi `Transaction` dan pembacanya (dieksekusi 2026-11-08):**
+- [x] `models/Transaction.ts` — `service`/`serviceSnapshot` dihapus; lima pasangan ref (`default: null`) + `*Snapshot` (shared `CategorySnapshotSchema`, subdocument terpisah agar kategori yang tidak diisi tidak memaksa validasi `required` pada snapshot-nya). `pre("validate")` hook: minimal satu dari lima wajib. Index `{kategori: 1, createdAt: -1}` ditambahkan untuk kelimanya.
+- [x] `validations/transactionSchema.ts` — `serviceId` tunggal diganti lima field opsional + `.refine()` minimal satu wajib.
+- [x] `services/transactionService.ts` — `createTransaction` resolve tiap kategori yang diisi (existence check, tanpa `isActive` check karena field itu tidak ada), pilih `computeServicePricing` vs `computeMultiCategoryPricing` berdasarkan jumlah kategori terisi.
+- [x] `validations/approvalSchema.ts` + `services/approvalService.ts` — whitelist dan `approveChangeRequest` digeneralisasi (lihat "Keputusan final" di atas).
+- [x] `services/dashboardService.ts#getServicePerformance` — redesain total: satu aggregation per kategori (match hanya transaksi yang mengisi ref itu), hasil kelimanya digabung dan diranking ulang di JS berdasarkan `revenue` (gross snapshot price, PAID-gated); response menambah field `category` per baris untuk disambiguasi.
+
+**Penghapusan `Service` (dieksekusi 2026-11-08, setelah seluruh pembaca di atas bermigrasi):**
+- [x] `models/Service.ts`, `services/serviceService.ts`, `validations/serviceSchema.ts`, `app/api/v1/services/**` — dihapus seluruhnya.
+- [x] File collateral yang ikut rusak karena penghapusan ini, diperbaiki pada ronde yang sama: `scripts/seedChangeRequests.ts` (archetype `serviceId` → lima archetype kategori, `transaction.serviceSnapshot.price` → `transaction.subtotal`), `lib/pagination.test.ts` (uniformity suite: `listServicesQuerySchema` → lima schema kategori baru).
+
+**Scalar docs (dieksekusi 2026-11-08):**
+- [x] `app/scalar/docs/paths/services.ts` dihapus, diganti `paths/{haircuts,shavings,treatments,colourings,chemicals}.ts`. `_schemas.ts`: `Service` diganti `Haircut`/`Shaving`/`Treatment`/`Colouring`/`Chemical` (shape sama, lewat satu `categorySchema` konstan) + `CategorySnapshot` baru untuk field `Transaction.*Snapshot`. `_config.ts` tags diperbarui. `paths/transactions.ts` (request body + whitelist change-request) dan `paths/dashboard.ts` (`/dashboard/services`: tambah field `category` per baris + `meta` yang sebelumnya terdokumentasi hilang — drift pre-existing, ditemukan dan diperbaiki sekalian karena menyentuh blok yang sama).
+
+**Tests (dieksekusi 2026-11-08):**
+- [x] `lib/utils.test.ts` — suite baru untuk `computeMultiCategoryPricing` (7 test: sum gross, split independen per kategori, diskon hanya di akhir, pelanggaran invarian yang disengaja saat >1 kategori, invarian tetap terjaga tanpa diskon, 3+ kategori, throw saat diskon melebihi subtotal gabungan).
+- [x] `services/transactionService.test.ts` — describe block baru "createTransaction category resolution" (3 test: 1 kategori pakai formula lama, 2 kategori pakai formula baru + sum benar, reject kategori yang tidak ditemukan). Describe block employee-validation yang sudah ada disesuaikan ke `haircutId`.
+- [x] `validations/transactionSchema.test.ts`, `validations/approvalSchema.test.ts` — disesuaikan ke field kategori baru, ditambah test kombinasi multi-kategori.
+- **Sengaja tidak dibangun** (proporsional, konsisten dengan `serviceService.ts` yang juga tidak pernah punya unit test): CRUD test untuk kelima service baru, dan unit test baru untuk `approvalService.ts` (perubahannya mekanis, mereuse primitif yang sudah ditest).
+
+**Koordinasi klien mobile — tahap terpisah atas instruksi user (pola yang sama dengan Phase 9/10):**
+- [ ] `docs/integration-to-mobile-flutter/` **sengaja belum disentuh.** Mengganti katalog `Service` memengaruhi setiap screen yang menampilkan/memilih servis di app Flutter — breaking change, butuh koordinasi build terpisah.
+- [ ] `scripts/migrateServiceToCategories.ts --fix` **belum dijalankan terhadap database manapun** — menunggu konfirmasi eksplisit (lihat "Keputusan final" di atas).
+
+**Verifikasi (dijalankan 2026-11-08, mencakup seluruh checklist di atas):** `vitest run` → 415/415 pass, all-green (naik dari baseline 382 — 33 test baru ditambahkan di atas, nol regresi). `biome check` bersih (repo-wide, bukan hanya file tersentuh — scope perubahan ronde ini cukup luas untuk itu; 13 file sempat butuh `--write` untuk format, sudah diterapkan). `tsc --noEmit` awalnya menunjukkan 3 error baru dari `.next/types/validator.ts` yang mereferensikan route `services/*` yang sudah dihapus — diperbaiki dengan `next typegen` (regenerasi route types), menyisakan hanya 2 error pre-existing yang sama dengan catatan Phase 9/10 (`app/page.tsx`, dari komit `fdb580d`). `next build` gagal di `Can't resolve 'tw-animate-css'`, pre-existing yang sama, tidak terkait Phase 11.
+
+---
+
+### Phase 12 — Struktur Field `Customer` Dipersempit ✅
+
+> **Status (dieksekusi 2026-11-08): kode penuh.** Saat verifikasi dimulai, `models/Customer.ts` ternyata **sudah** berbentuk target (perubahan uncommitted dari sebelum sesi verifikasi ini, tidak tercatat di memory/docs sebagai "sudah dieksekusi" — drift yang ditemukan, bukan dikerjakan dari nol) — tapi `validations/customerSchema.ts`, `services/customerService.ts`, routes, dan Scalar docs semuanya **masih bentuk lama sepenuhnya**, membuat API `/customers` saat verifikasi dimulai secara fungsional rusak: `cityFrom`/`age`/`busyness` tidak bisa diisi sama sekali (ditolak `.strict()` sebagai field tak dikenal), dan field lama yang dikirim client didiamkan begitu saja (Mongoose membuang field yang tidak ada schema path-nya, tanpa error). Dua dari tiga keputusan terbuka dikonfirmasi lewat `AskUserQuestion` sebelum kode lainnya disentuh; keputusan ketiga (tipe `busyness`) ternyata sudah terjawab lebih dulu lewat komentar di `models/Customer.ts` ("confirmed via user decision") — dipakai sebagai fakta, tidak ditanya ulang.
+
+**Sudah diputuskan (2026-11-08) — spek awal, lihat PRD §5.3:**
+- Struktur field target: `_id`, `name`, `cityFrom`, `age`, `busyness`, `phone`, `isActive`, `loyaltyPoints`, `createdAt`, `updatedAt`.
+- `isActive`/`loyaltyPoints` dipertahankan apa adanya — tipe, default, dan seluruh aturan terkait (precondition transaksi, earning, reversal) tidak berubah.
+- `customerCode`, `email`, `gender`, `birthDate`, `address`, `customerType`, `lastVisitAt` dihapus dari struktur.
+
+**Keputusan final (2026-11-08) — menyelesaikan tiga item yang sebelumnya terbuka:**
+- [x] **Tipe data `busyness`**: teks bebas (`String`, opsional) — sudah terkode di `models/Customer.ts` sebelum ronde verifikasi ini mulai; dipakai sebagai fakta yang sudah ditetapkan, tidak ditanya ulang ke user.
+- [x] **Klasifikasi privasi `cityFrom`/`age`/`busyness`**: **tidak dibatasi** — AGENT dan HOST menerima bentuk response identik, dikonfirmasi lewat `AskUserQuestion`. Konsekuensi: `serializeCustomer()` di `services/customerService.ts` tidak lagi menerima parameter `role` — tidak ada field Customer yang tersisa untuk dibatasi perannya.
+- [x] **Rencana migrasi data lama**: **tidak ada migrasi**, dikonfirmasi lewat `AskUserQuestion`. Dokumen existing yang masih menyimpan `customerCode`/`email`/`gender`/`birthDate`/`address`/`customerType`/`lastVisitAt` dibiarkan sebagai dead data — Mongoose mengabaikannya karena field itu tidak lagi punya schema path, tanpa script pembersih tambahan.
+
+**Model, validasi, service, routes (dieksekusi 2026-11-08):**
+- [x] `models/Customer.ts` — sudah berbentuk target saat verifikasi dimulai (lihat catatan status di atas).
+- [x] `validations/customerSchema.ts` — `email`/`gender`/`birthDate`/`address`/`notes` diganti `cityFrom`/`age`/`busyness`. `loyaltyPoints` tetap tidak pernah diterima pada `create`/`update` (aturan lama dipertahankan, tidak hilang saat migrasi).
+- [x] `services/customerService.ts` — `CustomerLike`, `serializeCustomer`, `createCustomer`, `updateCustomer` disesuaikan ke field baru. Parameter `role` dihapus dari seluruh 5 fungsi yang diekspor (termasuk `listCustomers`/`getCustomerById`/`setCustomerStatus` yang sebelumnya meneruskannya murni untuk serialisasi) — bukan sekadar tidak dipakai, dihapus total karena tidak ada lagi field yang perlu dibatasi perannya.
+- [x] `app/api/v1/customers/{route.ts,[id]/route.ts,[id]/status/route.ts}` — berhenti mengirim `user.role` ke fungsi service (konsekuensi langsung dari poin di atas). `requireRole(user, [...])` di level route tidak berubah — itu otorisasi akses endpoint, bukan serialisasi field.
+- [x] `app/scalar/docs/_schemas.ts` (`Customer` schema) dan `app/scalar/docs/paths/customers.ts` (`customerFieldsSchema`) — disesuaikan ke field baru, catatan "HOST only" pada field dihapus seluruhnya.
+- [x] Cek silang `transactionService.ts`/`approvalService.ts` — keduanya hanya membaca `customer.isActive`, dikonfirmasi tidak terdampak (field itu tidak berubah).
+
+**Tests:** tidak ada file test untuk `validations/customerSchema.ts` atau `services/customerService.ts` baik sebelum maupun setelah perubahan ini (konsisten dengan proporsionalitas yang sudah ditetapkan di Phase 11 — tidak membangun test baru untuk migrasi field yang murni mekanis).
+
+**Koordinasi klien mobile — tahap terpisah atas instruksi user (pola yang sama dengan Phase 9/10/11):**
+- [ ] `docs/integration-to-mobile-flutter/` **sengaja belum disentuh.** Mengganti struktur Customer memengaruhi setiap screen yang menampilkan/mengisi form pelanggan di app Flutter — breaking change, butuh koordinasi build terpisah.
+
+**Verifikasi (dijalankan 2026-11-08):** `vitest run` → 415/415 pass, all-green, sama persis dengan baseline Phase 11 (nol test baru, nol regresi — tidak ada test coverage untuk Customer sebelum maupun sesudah). `biome check` bersih di seluruh file tersentuh. `tsc --noEmit` menunjukkan hanya dua error pre-existing yang sama dengan catatan Phase 9/10/11 (`.next/types/validator.ts` soal `app/page.tsx`, dari komit `fdb580d`) — tidak ada error baru dari perubahan Phase 12. `next build` gagal di `Can't resolve 'tw-animate-css'`, pre-existing yang sama, tidak terkait Phase 12.
 
 ---
 
@@ -416,18 +536,24 @@ Salinan tracker dari PRD §21, centang di akhir setiap fase yang relevan:
 Phase 0 (Alignment)
    └── Phase 1 (Foundation)
           │
-          ├── Phase 2 (Master Data)
+          ├── Phase 2 (Master Data, termasuk Service hari ini)
           │      ├── Phase 3 (POS & Payments) ── Phase 5 (Approval, butuh Transaction)
+          │      │      └── Phase 10 (Transaction.employee, butuh Employee scaffold) ⏳
           │      └── Phase 4 (Inventory)
           │
           └── Phase 8 (Subscription & Billing, reuse lib/midtrans.ts dari Phase 3)
 
+Phase 2 + Phase 3            ──>  Phase 11 (Kategori Servis, pengganti Service) ✅
 Phase 3 + Phase 4 + Phase 5  ──>  Phase 6 (Dashboard, butuh data semua modul)
 Phase 6 + Phase 8            ──>  Phase 7 (Hardening)
 Phase 7                      ──>  Phase 9 (Keseragaman Pagination) ⏳
 ```
 
 Phase 9 bersifat lintas-modul: ia menyentuh endpoint milik Phase 2, 3, 4, 5, 6, dan 8 sekaligus, jadi ia menunggu semuanya ada. Tahap 1 dan 2 di dalamnya aman dikerjakan kapan saja; Tahap 3 punya dependensi eksternal ke build klien Flutter, bukan ke fase lain.
+
+Phase 11 butuh Phase 2 (tempat `Service` didefinisikan) **dan** Phase 3 (tempat `Transaction.service` dipakai) karena migrasinya menyentuh keduanya. Lebih berisiko dari Phase 10: Phase 10 menambah field baru tanpa menyentuh field lama, sementara Phase 11 berakhir dengan menghapus sebuah model yang sudah dipakai lima service/route berbeda — **risiko itu sudah terealisasi dan selesai dieksekusi 2026-11-08**, lihat checklist Phase 11 di atas. Dikerjakan setelah Phase 10 pada file yang sama (`services/transactionService.ts`, `validations/transactionSchema.ts`) tanpa konflik merge, karena keduanya sudah ada di working tree yang sama saat Phase 11 dieksekusi.
+
+Phase 10 hanya bergantung pada Phase 3 (field yang diubah ada di `Transaction`) dan keberadaan scaffold `models/Employee.ts` (sudah ada sejak 2026-10-15). Independen dari Phase 9 — keduanya bisa berjalan paralel.
 
 Phase 3 dan Phase 4 bisa dikerjakan paralel (sama-sama hanya bergantung pada Phase 1+2). Phase 6 menunggu data nyata dari Phase 3–5 agar aggregation tidak dites dengan data kosong/palsu.
 

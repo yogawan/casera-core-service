@@ -235,7 +235,7 @@ Grooma terdiri dari modul berikut:
 2. User Management
 3. Branch Management
 4. Customer Management
-5. Service Management
+5. Kategori Servis (Haircut, Shaving, Treatment, Colouring, Chemical)
 6. Transaction Management
 7. Payment Integration
 8. Transaction Change Approval
@@ -310,25 +310,47 @@ Aturan:
 
 Timezone digunakan untuk perhitungan laporan dan penentuan jam operasional.
 
-## 5.3. Customer
+## 5.3. Customer — *Struktur field dipersempit, dieksekusi 2026-11-08*
 
-Field:
+> **Status (dieksekusi 2026-11-08): kode penuh.** `models/Customer.ts`, `validations/customerSchema.ts`, `services/customerService.ts`, `app/api/v1/customers/*`, dan `app/scalar/docs/{_schemas.ts,paths/customers.ts}` semuanya memakai struktur field target di bawah. Tiga keputusan yang sebelumnya tercatat terbuka (tipe `busyness`, klasifikasi privasi, rencana migrasi data lama) sudah final — lihat masing-masing subsection di bawah. `transactionService.ts`/`approvalService.ts` tidak terdampak — keduanya hanya membaca `customer.isActive`, field yang tidak berubah.
+
+Field (struktur final):
 - `_id`
-- `customerCode`
 - `name`
+- `cityFrom`
+- `age`
+- `busyness`
 - `phone`
-- `email`
-- `gender`
-- `birthDate`
-- `address`
-- `customerType`: `DECOY | REGULAR`
-- `loyaltyPoints`
-- `lastVisitAt`
 - `isActive`
+- `loyaltyPoints`
 - `createdAt`
 - `updatedAt`
 
-Aturan:
+Field yang dihapus (tidak ada lagi di model maupun response manapun): `customerCode`, `email`, `gender`, `birthDate`, `address`, `notes`, `customerType` (`DECOY | REGULAR`), `lastVisitAt`.
+
+`isActive` dan `loyaltyPoints` **dipertahankan tanpa perubahan** (dikonfirmasi 2026-11-08) — keduanya aktif dipakai kode yang berjalan:
+- `isActive` adalah syarat sebelum transaksi dibuat/dikoreksi (`transactionService.ts`, `approvalService.ts`, §8.1). Aturan dan perilakunya tidak berubah.
+- `loyaltyPoints` adalah fitur loyalty points yang sudah lengkap (earning + reversal saat pembatalan) — lihat "Aturan" di bawah, juga tidak berubah.
+
+### Tipe data `busyness` (final)
+
+Teks bebas (`String`, opsional, tanpa enum) — bukan angka/enum/boolean. Merepresentasikan deskripsi ketersediaan/kesibukan pelanggan secara naratif, bukan nilai terstruktur. Tidak ada validasi format lebih lanjut di luar batas panjang (`max(500)` pada schema validasi; model sendiri tidak membatasi panjang).
+
+### Klasifikasi privasi `cityFrom`/`age`/`busyness` (final)
+
+**Tidak dibatasi — AGENT dan HOST menerima bentuk response Customer yang identik** (dikonfirmasi 2026-11-08). Berbeda dari `email`/`gender`/`birthDate`/`address` yang dulu HOST-only, ketiga field pengganti ini dinilai cukup ringan untuk tidak memerlukan pembatasan peran: `cityFrom` (lokasi umum, bukan alamat lengkap), `age` (umur, bukan tanggal lahir persis), `busyness` (kemungkinan besar operasional — soal ketersediaan waktu pelanggan). **Konsekuensi struktural**: `services/customerService.ts#serializeCustomer()` tidak lagi menerima parameter role sama sekali — tidak ada field Customer yang tersisa untuk dibatasi perannya. Lihat §7.5 untuk dampaknya ke endpoint.
+
+### Rencana migrasi data pelanggan yang sudah ada (final)
+
+**Tidak ada migrasi — dibiarkan sebagai dead data** (dikonfirmasi 2026-11-08). Dokumen `Customer` yang sudah ada sebelum perubahan ini masih menyimpan `customerCode`/`email`/`gender`/`birthDate`/`address`/`customerType`/`lastVisitAt` secara fisik di database, tapi field itu tidak lagi punya schema path di `models/Customer.ts` — Mongoose mengabaikannya (tidak error, tidak terbaca, tidak tertulis ulang). Tidak ada script yang menghapus atau memetakan field lama tersebut. Risiko yang diterima: data lama itu tidak bisa diakses lewat API manapun lagi, tapi juga tidak hilang secara permanen dari database — bisa dibersihkan manual nanti jika benar-benar diperlukan.
+
+### Field yang dihapus — detail dampak
+
+- **`lastVisitAt` dan `customerType` sudah dormant sebelum keputusan ini** — `lastVisitAt` tidak pernah ditulis di mana pun di kode (hanya dibaca/dikembalikan apa adanya), dan `customerType` (`DECOY`/`REGULAR`) sudah "deliberately absent" dari seluruh validation schema karena definisi operasional `DECOY` memang belum pernah dikonfirmasi. Menghapus keduanya tidak menghilangkan kemampuan yang benar-benar terpakai.
+- **`email`, `gender`, `birthDate`, `address` dulunya dibatasi dari AGENT** (HOST-only) — pembatasan itu sekarang tidak ada objeknya lagi karena field penggantinya (`cityFrom`/`age`/`busyness`) dikonfirmasi tidak dibatasi (lihat subsection di atas).
+
+### Aturan
+
 - Nomor telepon dapat digunakan untuk pencarian pelanggan.
 - Identitas pelanggan tidak boleh otomatis digandakan hanya karena format nomor telepon berbeda.
 - Customer yang sudah memiliki transaksi tidak boleh dihapus secara permanen.
@@ -337,11 +359,13 @@ Aturan:
 - **Pembalikan poin saat pembatalan sudah diimplementasikan.** Membatalkan transaksi yang sudah `PAID` (`POST /transactions/:id/cancel`) mencabut `pointsEarned`-nya dari `Customer.loyaltyPoints`. Membatalkan transaksi yang belum `PAID` tidak melakukan apa-apa pada poin — tidak ada yang pernah dikreditkan untuk dicabut. Transisi `transactionStatus` ke `CANCELLED` dan keputusan reversal keduanya berjalan sebagai satu operasi atomik dan kondisional (`findOneAndUpdate`, bukan read-modify-write), sehingga aman terhadap race dengan notifikasi Midtrans yang memproses settlement pada transaksi yang sama secara bersamaan — siapa pun yang menang di level database, yang kalah otomatis tidak melakukan apa-apa, bukan saling timpa. Pembatalan tetap tidak menyentuh `paymentStatus` itu sendiri maupun memicu refund gateway apa pun (proses refund memang belum dibangun, lihat §20) — hanya `loyaltyPoints` yang dibalik.
 - **Redemption (pemakaian poin) tetap di luar scope** (§20) — `loyaltyPoints` hanya pernah bertambah, tidak ada endpoint untuk menguranginya.
 
-Catatan: definisi operasional `DECOY` harus dikonfirmasi sebelum fitur klasifikasi pelanggan dirilis.
+## 5.4. Service — *Dihapus, diganti lima model di §5.14*
 
-## 5.4. Service
+> **Status (dieksekusi 2026-11-08): `Service` sudah dihapus sepenuhnya** — `models/Service.ts`, `services/serviceService.ts`, `validations/serviceSchema.ts`, dan seluruh route `app/api/v1/services/*` tidak ada lagi di codebase. Digantikan oleh lima model kategori — `Haircut`, `Shaving`, `Treatment`, `Colouring`, `Chemical` — lihat §5.14 untuk field dan aturannya. `Transaction.service`/`serviceSnapshot` juga sudah dihapus dari kode, diganti lima pasangan ref+snapshot opsional (§5.5). Section ini dipertahankan sebagai catatan historis bentuk field yang dulu berlaku, bukan kontrak yang aktif.
+>
+> **Nasib dokumen `Service` yang sudah ada di database sebelum penghapusan ini:** belum dieksekusi. `scripts/migrateServiceToCategories.ts` (dry-run default, `--fix` untuk menerapkan) tersedia untuk memetakan setiap dokumen `Service` ke collection kategori yang sesuai berdasarkan field `category`-nya — lihat §5.14 "Rencana migrasi data" untuk detail. Menjalankannya terhadap database nyata menunggu konfirmasi eksplisit, pola yang sama dengan skrip backfill/migrasi lain di proyek ini.
 
-Field:
+Field (bentuk historis, sudah tidak berlaku di kode):
 - `_id`
 - `serviceCode`
 - `name`
@@ -355,7 +379,7 @@ Field:
 - `createdAt`
 - `updatedAt`
 
-Aturan:
+Aturan (bentuk historis):
 - Harga tidak boleh negatif.
 - Persentase pembagian hasil harus berjumlah 100%.
 - Perubahan harga tidak boleh mengubah transaksi historis.
@@ -371,9 +395,13 @@ Field utama:
 - `transactionCode`
 - `branch`
 - `agent`
+- `employee`
 - `customer`
-- `service`
-- `serviceSnapshot`
+- `haircut`, `haircutSnapshot`
+- `shaving`, `shavingSnapshot`
+- `treatment`, `treatmentSnapshot`
+- `colouring`, `colouringSnapshot`
+- `chemical`, `chemicalSnapshot`
 - `paymentMethod`
 - `paymentStatus`
 - `transactionStatus`
@@ -416,16 +444,25 @@ Enum:
 - `REGULAR`
 - `OVERTIME`
 
-Snapshot layanan harus menyimpan harga, nama layanan, dan persentase pembagian hasil ketika transaksi dibuat.
+Setiap `*Snapshot` menyimpan nama, harga, dan persentase pembagian hasil dari dokumen kategori yang dipilih, diambil pada saat transaksi dibuat — histori transaksi tidak berubah kalau harga/pembagian hasil katalog berubah kemudian.
 
 Nilai pembayaran dan pembagian hasil harus dihitung backend, bukan diterima sebagai nilai final dari frontend.
+
+`agent` dan `employee` adalah dua hal berbeda dan **tidak boleh diasumsikan sama**: `agent` adalah akun yang memproses transaksi (kasir, diisi dari sesi login, §8.2/§8.3 — tidak pernah dari request body), sedangkan `employee` adalah pegawai yang **mengerjakan servis** dan berhak atas `employeeRevenue`. Kasir yang menginput transaksi belum tentu orang yang mengerjakan servisnya — pembagian ini sengaja dipisah supaya atribusi komisi benar. `employee` **wajib** diisi pada setiap transaksi baru (keputusan 2026-11-06, lihat §5.13), dipilih secara manual oleh AGENT saat input (bukan diturunkan dari sesi, lihat §8.3), dan mereferensikan `Employee` (§5.13) — bukan `User`.
+
+**`service`/`serviceSnapshot` sudah dihapus dari kode (dieksekusi 2026-11-08).** Digantikan oleh lima pasangan field opsional: `haircut`/`haircutSnapshot`, `shaving`/`shavingSnapshot`, `treatment`/`treatmentSnapshot`, `colouring`/`colouringSnapshot`, `chemical`/`chemicalSnapshot` — maksimal satu dokumen per kategori, minimal satu dari lima wajib terisi per transaksi (ditegakkan baik di schema validasi maupun `pre("validate")` hook pada model). Lihat §5.14 untuk desain lengkap kelima model kategori tersebut.
 
 ### Transaction Invariants
 
 - `total` tidak boleh negatif.
 - `total` harus sesuai dengan subtotal dikurangi diskon dan ditambah komponen biaya lain jika kelak diperkenalkan.
-- `ownerRevenue` dan `employeeRevenue` harus dihitung menggunakan snapshot pembagian hasil.
-- Transaksi harus memiliki cabang, agent, service, dan referensi customer yang valid sesuai aturan bisnis.
+- Transaksi harus mengisi **minimal satu** dari lima field kategori (`haircut`/`shaving`/`treatment`/`colouring`/`chemical`), dan **tidak lebih dari satu dokumen per kategori** (bukan array) — menggantikan `service: required: true` yang berlaku sebelum §5.14 dieksekusi.
+- `subtotal`/`total`/`ownerRevenue`/`employeeRevenue`/`pointsEarned` tetap satu angka per transaksi, tapi maknanya adalah **jumlah/akumulasi** dari seluruh kategori yang terisi — bukan dihitung dari satu servis tunggal. Rumus akumulasi (dieksekusi 2026-11-08, PRD §5.14 "Rumus akumulasi finansial lintas-kategori"):
+  - **Tepat satu kategori terisi**: formula tidak berubah dari sebelum §5.14 — `ownerRevenue`/`employeeRevenue` dihitung dari `total` (setelah diskon), sehingga `ownerRevenue + employeeRevenue` selalu persis sama dengan `total`.
+  - **Lebih dari satu kategori terisi**: setiap kategori menghitung pembagian hasilnya sendiri dari harga **kotornya sendiri** (bukan dari persentase gabungan/blended), lalu dijumlahkan. `discountAmount` hanya dikurangi dari `total` akhir, **tidak pernah** didistribusikan kembali ke `ownerRevenue`/`employeeRevenue` kategori manapun. Konsekuensi yang disengaja: `ownerRevenue + employeeRevenue` **tidak lagi otomatis sama dengan** `total` begitu `discountAmount > 0` dan lebih dari satu kategori terisi — ini keputusan eksplisit, bukan bug.
+- `employeeRevenue` secara semantik adalah milik `employee`, bukan `agent` — lihat paragraf di atas.
+- Transaksi harus memiliki cabang, agent, employee, dan referensi customer yang valid sesuai aturan bisnis, selain invarian kategori di atas.
+- `employee` yang dipilih harus memiliki `Employee.branch` yang sama dengan `branch` transaksi, dan `Employee.employmentStatus: ACTIVE` pada saat transaksi dibuat — tidak boleh mengatribusikan `employeeRevenue` ke pegawai yang sudah resign/suspended.
 - Status pembayaran hanya dapat berubah melalui proses pembayaran yang tervalidasi.
 - Perubahan transaksi yang sudah dibayar harus melalui mekanisme koreksi yang disetujui.
 - Setiap perubahan yang disetujui harus dicatat dalam audit history.
@@ -594,9 +631,11 @@ Aturan:
 - Invoice baru hanya diterbitkan ketika periode sebelumnya berakhir dan tidak ada invoice `PENDING` lain yang aktif untuk `Subscription` yang sama.
 - Status pembayaran hanya berubah melalui notifikasi Midtrans yang terverifikasi, mengikuti aturan yang sama dengan §9.
 
-## 5.13. Employee — *Scaffold dibuat, migrasi belum dieksekusi*
+## 5.13. Employee — *Scaffold untuk migrasi `User` penuh; satu konsumen wajib (`Transaction.employee`) sudah live di kode*
 
-> **Status: scaffold only.** `models/Employee.ts` sudah dibuat dan bentuknya cocok dengan rancangan di bawah, tetapi **tidak dibaca maupun ditulis oleh service atau route manapun**. Satu-satunya data kepegawaian yang masih berada di `User` hari ini adalah **`branch`** (§5.1) — `compensation` sudah dihapus dari `User` dan kini hanya dideklarasikan di sini. Ini adalah langkah "expand" pertama dari pola expand–migrate–contract di bagian "Prasyarat" di bawah: aditif murni, nol perubahan behavior. Bagian ini mendokumentasikan pemisahan yang sudah diputuskan beserta pemicu dan prasyaratnya, supaya keputusannya tidak perlu diturunkan ulang dari awal nanti. **Jangan migrasikan field secara sebagian** — lihat "Prasyarat" di bawah.
+> **Status (diverifikasi ulang 2026-11-08): migrasi `User` penuh masih scaffold, tapi konsumen wajib pertamanya sudah dieksekusi.** `models/Employee.ts` **sekarang dibaca dan ditulis** oleh `services/transactionService.ts` — `createTransaction` memvalidasi `employeeId` (harus `Employee` yang ada, `employmentStatus: ACTIVE`, satu cabang dengan transaksi) lalu menyimpan `Transaction.employee`, lihat §5.5 dan subsection "Keputusan 2026-11-06" di bawah. Klaim versi sebelumnya ("tidak dibaca maupun ditulis oleh service atau route manapun") sudah basi untuk konsumen ini secara spesifik. Migrasi **penuh** `User` → `User` + `Employee` (pemindahan `branch`/`compensation`, lihat "Rancangan model" di bawah) tetap belum dieksekusi — scope Phase 10 sengaja lebih sempit, lihat "Keputusan 2026-11-06". Satu-satunya data kepegawaian yang masih berada di `User` hari ini tetap **`branch`** (§5.1) — `compensation` sudah dihapus dari `User` dan kini hanya dideklarasikan di sini. **Jangan migrasikan `branch`/`compensation` secara sebagian** — lihat "Prasyarat" di bawah; itu tidak terpengaruh oleh Phase 10.
+>
+> **Prasyarat operasional: sudah dijalankan (2026-11-08).** `scripts/backfillEmployeeRecords.ts` (idempotent — satu `Employee` per `User` berole `AGENT` yang belum punya) sudah dieksekusi terhadap database deployment ini setelah konfirmasi eksplisit user: 1 `AGENT` ditemukan, 1 `Employee` dibuat (`employmentStatus: ACTIVE`). `models/Transaction.ts`'s `employee` sudah `required: true` di kode, dan setiap `AGENT` yang sudah ada kini punya `Employee` pasangannya. Lihat `docs/PLAN-GROOMA.md` Phase 10.
 
 ### Masalah yang dipisahkan
 
@@ -646,13 +685,22 @@ Hari ini, isolasi role platform ditegakkan dengan *allowlist* enum (`HOST`/`AGEN
 
 ### Pemicu implementasi
 
-Pemisahan ini dikerjakan ketika **salah satu** dari berikut masuk scope:
+Pemisahan **penuh** `User` → `User` + `Employee` dikerjakan ketika **salah satu** dari berikut masuk scope:
 
 1. **Modul Attendance** (§20) — butuh entitas yang bisa direferensikan per hari kerja.
 2. **Payroll automation** (§20) — butuh `compensation` sebagai data hidup, bukan field mati.
 3. **Riwayat kepegawaian** — kebutuhan mencatat pegawai yang pindah cabang atau resign lalu bergabung kembali, yang tidak dapat diwakili oleh satu field `branch` tunggal.
 
-Selama ketiganya di luar scope, pemisahan ini **tidak memberi manfaat fungsional**: `compensation` tidak terpakai, dan setiap akun operasional tetap punya tepat satu cabang. Mengerjakannya lebih awal hanya menambah satu join tanpa menambah kemampuan.
+Selama ketiganya di luar scope, pemisahan **penuh** ini **tidak memberi manfaat fungsional** tambahan di luar yang sudah dicakup keputusan 2026-11-06 di bawah: `compensation` tetap tidak terpakai, dan setiap akun operasional tetap punya tepat satu cabang lewat `User.branch`. Mengerjakan migrasi `branch`/`compensation` lebih awal hanya menambah satu join tanpa menambah kemampuan.
+
+### Keputusan 2026-11-06: `Transaction.employee` wajib
+
+Keputusan baru, **lebih sempit** dari tiga pemicu di atas — bukan migrasi §5.13 penuh. Setiap transaksi baru wajib mencatat `employee` (ref `Employee`) yang mengerjakan servis, terpisah dari `agent` yang hanya mencatat siapa yang memproses transaksi di kasir. Detail field dan invariannya ada di §5.5.
+
+- **Bukan migrasi §5.13 penuh.** Ini tidak memindahkan `branch`/`compensation` keluar dari `User`, tidak mengubah `User.role` atau validasi `pre("validate")`-nya, dan tidak mengaktifkan `Attendance`. Hanya `Transaction` yang mendapat relasi baru ke `Employee`.
+- **Menyelesaikan poin 3 "Prasyarat" di bawah tanpa memicu poin 4.** `agent` tetap `ref: "User"` dengan semantik aktor/audit murni, konsisten dengan 10 referensi `User` lain yang sudah disebut poin 3 — keputusan Phase 1 di `docs/PLAN-GROOMA.md` tidak dibalik. `employeeRevenue` yang sebelumnya implisit "milik siapa pun yang jadi `agent`" sekarang eksplisit: milik `employee`.
+- **Prasyarat rollout, wajib selesai sebelum field ini di-set `required: true` di kode:** setiap akun `AGENT` yang akan dipilih sebagai `employee` pada transaksi harus sudah punya catatan `Employee` dengan `branch` yang cocok dan `employmentStatus: ACTIVE`. Hari ini **belum ada satu pun** `Employee` record (model baru dibuat sebagai scaffold kosong, 2026-10-15) — sebelum constraint ini bisa aktif di kode, perlu skrip backfill yang membuat satu `Employee` per `User` berole `AGENT` yang sudah ada. Tanpa ini, AGENT lama tidak akan bisa membuat transaksi apa pun begitu validasi diaktifkan.
+- **Status implementasi (diverifikasi ulang 2026-11-08): kode sudah dieksekusi** — `models/Transaction.ts` (`employee` kini `required: true`), `validations/transactionSchema.ts` (`employeeId` wajib di create schema), dan `services/transactionService.ts` (`createTransaction` memvalidasi dan menyimpannya) semuanya sudah berubah. Satu prasyarat operasional masih pending: `scripts/backfillEmployeeRecords.ts` ditulis tapi belum dijalankan terhadap database manapun (butuh konfirmasi eksplisit, bukan dijalankan otomatis — menulis ke database yang sedang dipakai). Koordinasi klien mobile (`TRANSACTION-MOBILE-API-INTEGRATION.md`) **sengaja masih belum disentuh**, tahap terpisah seperti semula. Lihat `docs/PLAN-GROOMA.md` Phase 10 untuk checklist terkini.
 
 ### Prasyarat — baca sebelum mulai
 
@@ -660,10 +708,83 @@ Ini **bukan** refactor lokal. Empat hal berikut wajib diperhitungkan:
 
 1. **Migrasi lintas repo.** Koleksi `users` dibagi dengan backend admin yang menulis baris `GROOMA_ADMIN` (§3.6). Memindahkan field keluar dari `users` adalah *breaking change* bagi codebase tersebut dan harus dikoordinasikan, bukan dirilis sepihak.
 2. **Biaya hot path session.** Validasi session membaca `branch` dari dokumen user pada **setiap request terautentikasi**. Bila `branch` pindah ke `Employee`, dibutuhkan query kedua, `$lookup`, atau denormalisasi `branch` yang disengaja ke `User`. Putuskan ini di awal desain, bukan setelah implementasi.
-3. **Arah referensi yang sudah ada.** Dari 11 referensi `ref: "User"` pada 7 model, **10 di antaranya bersemantik aktor/audit** (`Session`, `IdempotencyKey`, `InventoryMovement`, ketiga model subscription, dan 4 referensi audit pada `Transaction`) dan **harus tetap menunjuk `User`** — yang melakukan tindakan adalah akun, bukan catatan kepegawaian. Hanya `Transaction.agent` yang dapat diperdebatkan, karena pihak itulah yang memperoleh `employeeRevenue`.
-4. **Preseden yang berlawanan arah.** `docs/PLAN-GROOMA.md` mencatat bahwa `Transaction` semula memakai `employee` + `ref: "Employee"` dan Phase 1 **sengaja** mengubahnya menjadi `agent` + `ref: "User"` karena model `Employee` tidak eksis. Mengubah `Transaction.agent` kembali berarti membalik keputusan yang sudah dipertimbangkan — lakukan hanya bila poin 3 benar-benar menuntutnya, dan catat alasannya.
+3. **Arah referensi yang sudah ada.** Dari 11 referensi `ref: "User"` pada 7 model, **10 di antaranya bersemantik aktor/audit** (`Session`, `IdempotencyKey`, `InventoryMovement`, ketiga model subscription, dan 4 referensi audit pada `Transaction`) dan **harus tetap menunjuk `User`** — yang melakukan tindakan adalah akun, bukan catatan kepegawaian. `Transaction.agent` sebelumnya disebut "dapat diperdebatkan" di sini karena pihak itulah yang memperoleh `employeeRevenue` — **sudah diselesaikan** (lihat "Keputusan 2026-11-06" di atas) dengan menambah field baru `Transaction.employee` (ref `Employee`), bukan mengubah `ref` pada `agent`. `agent` kini definitif masuk kelompok 11 referensi `User` yang tidak berubah.
+4. **Preseden yang berlawanan arah — tidak dibalik, hanya mirip nama.** `docs/PLAN-GROOMA.md` mencatat bahwa `Transaction` semula memakai field bernama `employee` dengan `ref: "Employee"` untuk field yang sekarang bernama `agent`, dan Phase 1 **sengaja** mengubahnya menjadi `agent` + `ref: "User"` karena model `Employee` tidak eksis saat itu. Field `employee` baru yang ditambahkan 2026-11-06 **bukan kebangkitan field lama itu** — ini field terpisah yang hidup berdampingan dengan `agent`, yang tidak disentuh dan tetap `ref: "User"`. Kemiripan nama adalah kebetulan historis, bukan pembalikan keputusan Phase 1.
 
 Pendekatan migrasi yang disarankan: **expand–migrate–contract**. Tambahkan `Employee` dan tulis ganda, pindahkan pembaca satu per satu, baru hapus field lama dari `User` setelah backend admin ikut diperbarui. Jangan pindahkan dan hapus dalam satu rilis.
+
+---
+
+## 5.14. Kategori Servis — Haircut, Shaving, Treatment, Colouring, Chemical *(pengganti Service, dieksekusi 2026-11-08)*
+
+> **Status (dieksekusi 2026-11-08): kode penuh — model, validasi, service, routes, migrasi `Transaction`, dan penghapusan `Service`.** `models/Haircut.ts`, `Shaving.ts`, `Treatment.ts`, `Colouring.ts`, `Chemical.ts` kini dibaca/ditulis oleh `services/{haircut,shaving,treatment,colouring,chemical}Service.ts` dan `app/api/v1/{haircuts,shavings,treatments,colourings,chemicals}/*` (CRUD: list/create/detail/update — HOST mengelola, AGENT baca-saja). `Transaction` (§5.5) menyimpan referensi langsung ke kelima model ini; `transactionService.ts`/`approvalService.ts`/`dashboardService.ts` sudah bermigrasi penuh. `models/Service.ts` dan seluruh CRUD/route/validasinya **sudah dihapus** (lihat §5.4). Lima keputusan yang sebelumnya terbuka (struktur field `quantity`/`total`, rumus akumulasi, migrasi data, field yang dibawa balik, whitelist `changeRequest`) semuanya final — lihat subsection masing-masing di bawah. Verifikasi: `vitest run` 415/415 all-green, `biome check` bersih, `tsc --noEmit`/`next build` menunjukkan hanya kegagalan pre-existing yang tidak terkait (dicatat sejak Phase 9). Lihat `docs/PLAN-GROOMA.md` Phase 11 untuk checklist lengkap.
+>
+> **Belum dieksekusi, sengaja dipisah sebagai tahap terpisah:** (1) migrasi data dokumen `Service` yang sudah ada ke lima collection baru — skrip sudah ditulis (`scripts/migrateServiceToCategories.ts`) tapi belum dijalankan terhadap database manapun, lihat "Rencana migrasi data" di bawah; (2) `docs/integration-to-mobile-flutter/` — breaking change untuk client Flutter, koordinasi terpisah, pola yang sama dengan Phase 9/10.
+
+### Mengapa lima model, bukan satu `category` field
+
+`Service` hari ini sudah punya field `category` (string bebas, §5.4) yang secara teknis bisa menampung kelima nama ini tanpa perlu lima collection terpisah. Pemisahan ini **bukan keterpaksaan teknis** — ini keputusan eksplisit agar kelima kategori punya struktur dan default pembagian hasil masing-masing, terpisah secara fisik di level collection.
+
+### Struktur field — identik di kelima model
+
+- `_id`
+- `name`
+- `price`
+- `revenueSharing.ownerPercentage`
+- `revenueSharing.employeePercentage`
+- `timestamp`
+
+**`quantity` dan `total` dikonfirmasi TIDAK ada (koreksi 2026-11-08).** Permintaan spesifikasi awal (2026-11-06) mencantumkan kedua field ini, tapi user mengoreksi langsung: "untuk quantity dan total per collection/kategori ternyata tidak ada, dihilangkan saja 2 field ini pada semua kategori." Konsekuensinya menyelesaikan pertanyaan "makna operasional quantity/total" yang sebelumnya terbuka — pertanyaan itu sekarang tidak relevan karena field-nya tidak pernah ada. Setiap kategori hanya menyumbang `price`-nya sendiri (bukan `price × quantity`) ke kalkulasi finansial Transaction — lihat "Relasi ke `Transaction`" di bawah.
+
+Default pembagian hasil berbeda per model (keputusan 2026-11-06, field-nya tetap bisa diubah per dokumen — ini default, bukan nilai terkunci):
+
+| Model | `ownerPercentage` | `employeePercentage` |
+|---|---|---|
+| `Haircut` | 50 | 50 |
+| `Shaving` | 50 | 50 |
+| `Treatment` | 50 | 50 |
+| `Colouring` | 60 | 40 |
+| `Chemical` | 60 | 40 |
+
+### Field yang sengaja TIDAK dibawa dari `Service` — konfirmasi final, tidak ditambahkan balik
+
+Dibanding §5.4, kelima model ini **tidak punya** `serviceCode`, `description`, `category` (tidak perlu — kategori sekarang adalah nama model itu sendiri), `durationMinutes`, dan `isActive`. Ini eksplisit sesuai spesifikasi field yang diminta, bukan kelalaian. **Dikonfirmasi final 2026-11-08: tidak ada yang ditambahkan balik** — alasan user: `Service` (model lama) sudah tidak dibutuhkan lagi karena lima collection pengganti sudah ada, sehingga field-field lama itu tidak perlu dipertahankan. Konsekuensi yang tetap berlaku: tanpa `isActive`, tidak ada mekanisme "nonaktifkan tanpa hapus" seperti yang `Service` dulu punya; tanpa `serviceCode`, tidak ada identifier pendek untuk referensi di luar `_id`.
+
+### Aturan yang sudah pasti dari schema
+
+- `price` tidak boleh negatif.
+- `ownerPercentage`/`employeePercentage` masing-masing 0–100.
+- `ownerPercentage + employeePercentage` harus berjumlah 100% — `pre("validate")` hook identik dengan `Service` (§5.4) dulu, ditambahkan ke kelima model 2026-11-08.
+
+### Relasi ke `Transaction` — dieksekusi 2026-11-08
+
+CRUD `Service` **digantikan**, bukan ditambah di sampingnya, oleh CRUD kelima model kategori ini. `Transaction` (§5.5) berhenti menyimpan `service`/`serviceSnapshot` tunggal, dan sebagai gantinya menyimpan referensi ke kelima model ini langsung:
+
+- `haircut` (ref `Haircut`, opsional/nullable) + `haircutSnapshot`
+- `shaving` (ref `Shaving`, opsional/nullable) + `shavingSnapshot`
+- `treatment` (ref `Treatment`, opsional/nullable) + `treatmentSnapshot`
+- `colouring` (ref `Colouring`, opsional/nullable) + `colouringSnapshot`
+- `chemical` (ref `Chemical`, opsional/nullable) + `chemicalSnapshot`
+
+Setiap `*Snapshot` berbentuk sama dengan `serviceSnapshot` dulu — `{ name, price, ownerPercentage, employeePercentage }` — diambil dari dokumen kategori yang dipilih pada saat transaksi dibuat, dengan alasan yang sama: histori transaksi tidak boleh berubah kalau harga/pembagian hasil katalog berubah kemudian. Tidak ada `quantity`/`total` yang perlu dipertimbangkan untuk disalin — field itu dikonfirmasi tidak ada sama sekali di kelima model (lihat "Struktur field" di atas).
+
+**Kardinalitas (dikonfirmasi 2026-11-06): maksimal satu dokumen per kategori per transaksi.** Satu transaksi boleh mengisi 1 sampai 5 dari field di atas sekaligus (misal `haircut` + `shaving` bersamaan dalam satu kunjungan), tapi tidak boleh dua dokumen dari kategori yang sama dalam satu transaksi — bukan array. Invarian baru: **minimal satu dari kelima field wajib terisi**, sudah menggantikan `service: required: true` yang berlaku sebelum migrasi ini.
+
+**Rumus akumulasi finansial lintas-kategori (dikonfirmasi 2026-11-08):** `subtotal`, `total`, `ownerRevenue`, `employeeRevenue`, `pointsEarned` tetap satu angka per transaksi, tapi maknanya adalah **jumlah/akumulasi** dari seluruh kategori yang terisi:
+- **Tepat satu kategori terisi** (kasus paling umum): formula tidak berubah dari sebelum migrasi ini — `ownerRevenue`/`employeeRevenue` dihitung dari `total` (setelah diskon). `ownerRevenue + employeeRevenue` selalu persis sama dengan `total`.
+- **Lebih dari satu kategori terisi**: setiap kategori menghitung pembagian hasilnya sendiri dari harga kotornya sendiri (`price`, bukan percentage gabungan/blended antar kategori), lalu dijumlahkan menjadi `ownerRevenue`/`employeeRevenue`. `discountAmount` hanya dikurangi dari `total` akhir (`subtotal` gabungan dikurangi diskon), **tidak pernah** didistribusikan proporsional ke kategori manapun atau ke `ownerRevenue`/`employeeRevenue`. **Konsekuensi yang disengaja**: `ownerRevenue + employeeRevenue` **tidak lagi otomatis sama dengan** `total` begitu `discountAmount > 0` dengan lebih dari satu kategori terisi — keputusan eksplisit user, bukan oversight. Alasan praktis: ini generalisasi paling sederhana yang tetap mempertahankan perilaku kasus satu-kategori persis seperti sebelumnya, tanpa mengubah formula yang sudah berjalan untuk mayoritas transaksi.
+
+### Rencana migrasi data `Service` → lima collection (dikonfirmasi 2026-11-08)
+
+Pemetaan berdasarkan field `category` yang sudah ada pada setiap dokumen `Service` — pencocokan case-insensitive ke salah satu dari Haircut/Shaving/Treatment/Colouring/Chemical. `scripts/migrateServiceToCategories.ts` (dry-run default, `--fix` untuk menerapkan) mengimplementasikan ini:
+- Dokumen `Service` yang `category`-nya tidak cocok dengan salah satu dari lima nama (termasuk kosong/tidak ada) dilaporkan sebagai **unmapped**, tidak pernah ditebak.
+- Idempoten secara heuristik: sebuah dokumen dianggap sudah termigrasi jika collection tujuan sudah punya dokumen dengan `name` yang sama persis — bukan garansi absolut (dua `Service` berbeda dengan nama sama di kategori yang sama hanya akan termigrasi sekali), cukup untuk migrasi satu kali.
+- **Tidak menyentuh atau menghapus** collection `services` sumber — murni menambah ke lima collection tujuan. Nasib collection `services` lama sesudahnya (arsip, dibiarkan, atau dihapus manual) adalah keputusan terpisah, belum diambil.
+- **Belum dijalankan terhadap database manapun** — menunggu konfirmasi eksplisit, konsisten dengan pola skrip migrasi/backfill lain di proyek ini (`scripts/backfillEmployeeRecords.ts`).
+
+### `changeRequest.requestedChanges` whitelist (dikonfirmasi 2026-11-08)
+
+`serviceId` pada whitelist §10 **diganti** lima field kategori opsional: `haircutId`, `shavingId`, `treatmentId`, `colouringId`, `chemicalId`. Setiap field yang dikirim mengubah/menetapkan kategori tersebut pada transaksi; kategori yang tidak disebutkan dalam `requestedChanges` tidak tersentuh (bukan dihapus). Mekanisme "hapus/kosongkan kategori yang sudah ada lewat change request" **tidak dibangun** — di luar scope permintaan ini, analog dengan `serviceId` dulu yang juga tidak pernah mendukung "transaksi tanpa service".
 
 ---
 
@@ -819,19 +940,36 @@ AGENT hanya boleh melihat informasi cabangnya sendiri.
 
 Untuk MVP, AGENT boleh membuat pelanggan ketika transaksi baru dibuat membutuhkan pelanggan yang belum terdaftar.
 
-Akses AGENT ke customer harus dibatasi berdasarkan kebutuhan operasional dan kebijakan privasi. Backend tidak boleh mengembalikan data pribadi pelanggan yang tidak diperlukan.
+**Pembatasan field privasi AGENT dicabut (dikonfirmasi 2026-11-08, setelah struktur Customer dipersempit — §5.3).** Sebelum §5.3 dieksekusi, AGENT dibatasi dari field PII (`email`/`gender`/`birthDate`/`address`) sementara HOST melihat semuanya. Field-field itu sudah dihapus dari model; penggantinya (`cityFrom`/`age`/`busyness`) dikonfirmasi tidak cukup sensitif untuk dibatasi — ketiganya versi yang lebih ringan dari field yang dihapus (lokasi umum bukan alamat lengkap, umur bukan tanggal lahir, `busyness` kemungkinan operasional). **AGENT dan HOST sekarang menerima bentuk response Customer yang identik** — tidak ada lagi field yang dibatasi perannya. Kalimat "Backend tidak boleh mengembalikan data pribadi pelanggan yang tidak diperlukan" tetap berlaku sebagai prinsip umum, tapi saat ini tidak ada field Customer yang termasuk kategori itu.
 
-## 7.6. Service Management
+## 7.6. Kategori Servis (Haircut, Shaving, Treatment, Colouring, Chemical)
+
+> **Menggantikan Service Management** (dieksekusi 2026-11-08, PRD §5.4/§5.14). Lima namespace identik strukturnya — hanya nama resource yang berbeda. Tidak ada `/status` sub-route pada kelimanya: kelima model tidak punya field `isActive` (§5.14), sehingga tidak ada mekanisme aktif/nonaktif untuk endpoint ini.
 
 | Method | Endpoint | Access | Description |
 |---|---|---|---|
-| GET | `/services` | HOST, AGENT | List active services |
-| POST | `/services` | HOST | Create service |
-| GET | `/services/:id` | HOST, AGENT | Service details |
-| PATCH | `/services/:id` | HOST | Update service |
-| PATCH | `/services/:id/status` | HOST | Activate/deactivate |
+| GET | `/haircuts` | HOST, AGENT | List haircuts |
+| POST | `/haircuts` | HOST | Create haircut |
+| GET | `/haircuts/:id` | HOST, AGENT | Haircut details |
+| PATCH | `/haircuts/:id` | HOST | Update haircut |
+| GET | `/shavings` | HOST, AGENT | List shavings |
+| POST | `/shavings` | HOST | Create shaving |
+| GET | `/shavings/:id` | HOST, AGENT | Shaving details |
+| PATCH | `/shavings/:id` | HOST | Update shaving |
+| GET | `/treatments` | HOST, AGENT | List treatments |
+| POST | `/treatments` | HOST | Create treatment |
+| GET | `/treatments/:id` | HOST, AGENT | Treatment details |
+| PATCH | `/treatments/:id` | HOST | Update treatment |
+| GET | `/colourings` | HOST, AGENT | List colourings |
+| POST | `/colourings` | HOST | Create colouring |
+| GET | `/colourings/:id` | HOST, AGENT | Colouring details |
+| PATCH | `/colourings/:id` | HOST | Update colouring |
+| GET | `/chemicals` | HOST, AGENT | List chemicals |
+| POST | `/chemicals` | HOST | Create chemical |
+| GET | `/chemicals/:id` | HOST, AGENT | Chemical details |
+| PATCH | `/chemicals/:id` | HOST | Update chemical |
 
-AGENT hanya dapat memilih service yang aktif saat membuat transaksi.
+AGENT dapat melihat seluruh entri di kelima kategori (tidak ada subset aktif/nonaktif untuk dibatasi) saat membuat transaksi, dan memilih 1 sampai 5 dari kelima kategori sekaligus per transaksi (§5.14).
 
 ## 7.7. Transaction Management
 
@@ -941,36 +1079,42 @@ Sebelum transaksi dibuat:
 - User memiliki cabang aktif.
 - Cabang berstatus ACTIVE.
 - Customer tersedia dan aktif.
-- Service tersedia dan aktif.
-- Harga service valid.
-- Aturan pembagian hasil valid.
+- Minimal satu dari lima kategori servis (Haircut/Shaving/Treatment/Colouring/Chemical, §5.14) yang dipilih tersedia — maksimal satu dokumen per kategori, boleh 1 sampai 5 kategori sekaligus.
+- Employee yang mengerjakan servis tersedia, aktif (`employmentStatus: ACTIVE`), dan berada di cabang yang sama dengan transaksi (§5.5, §5.13).
+- Harga setiap kategori yang dipilih valid.
+- Aturan pembagian hasil valid untuk setiap kategori yang dipilih.
 
 ## 8.2. Process
 
 1. AGENT memilih customer.
-2. AGENT memilih service.
-3. Frontend mengirimkan request pembuatan transaksi.
-4. Backend mengambil data customer, service, user, dan branch dari database.
-5. Backend memvalidasi seluruh referensi.
-6. Backend menghitung subtotal, diskon, total, dan pembagian hasil.
-7. Backend menyimpan snapshot service dan aturan pembagian hasil.
-8. Backend menghasilkan kode transaksi unik.
-9. Backend membuat transaksi dengan status yang sesuai.
-10. Untuk metode QRIS pada HOST bermode `MANAGED`, backend membuat payment order di Midtrans; untuk HOST bermode `SELF_RECORDED`, langkah ini dilewati dan transaksi langsung berstatus `PAID` (§9.6).
-11. Backend menyimpan referensi payment gateway (jika ada).
-12. Backend mengembalikan informasi transaksi dan QRIS kepada frontend.
+2. AGENT memilih satu atau lebih kategori servis (Haircut/Shaving/Treatment/Colouring/Chemical) — maksimal satu dokumen per kategori.
+3. AGENT memilih employee yang mengerjakan servis (§5.5, §5.13) — bisa sama atau berbeda dengan AGENT yang login.
+4. Frontend mengirimkan request pembuatan transaksi.
+5. Backend mengambil data customer, setiap kategori yang dipilih, employee, user, dan branch dari database.
+6. Backend memvalidasi seluruh referensi, termasuk kecocokan cabang dan status aktif employee.
+7. Backend menghitung subtotal, diskon, total, dan pembagian hasil — formula berbeda tergantung jumlah kategori yang terisi (§5.14 "Rumus akumulasi finansial lintas-kategori").
+8. Backend menyimpan snapshot setiap kategori yang dipilih dan aturan pembagian hasilnya.
+9. Backend menghasilkan kode transaksi unik.
+10. Backend membuat transaksi dengan status yang sesuai.
+11. Untuk metode QRIS pada HOST bermode `MANAGED`, backend membuat payment order di Midtrans; untuk HOST bermode `SELF_RECORDED`, langkah ini dilewati dan transaksi langsung berstatus `PAID` (§9.6).
+12. Backend menyimpan referensi payment gateway (jika ada).
+13. Backend mengembalikan informasi transaksi dan QRIS kepada frontend.
 
 ## 8.3. Request Example
 
 ```json
 {
   "customerId": "customer_object_id",
-  "serviceId": "service_object_id",
+  "haircutId": "haircut_object_id",
+  "shavingId": "shaving_object_id",
+  "employeeId": "employee_object_id",
   "paymentMethod": "QRIS",
   "discountAmount": 0,
   "serviceHourType": "REGULAR"
 }
 ```
+
+Contoh di atas mengisi dua kategori (`haircutId` + `shavingId`) sekaligus dalam satu transaksi — kombinasi ini opsional; satu kategori saja juga valid. Minimal satu dari `haircutId`/`shavingId`/`treatmentId`/`colouringId`/`chemicalId` wajib terisi.
 
 Backend tidak menerima nilai final berikut sebagai sumber kebenaran:
 - `agentId`
@@ -978,9 +1122,11 @@ Backend tidak menerima nilai final berikut sebagai sumber kebenaran:
 - `total`
 - `ownerRevenue`
 - `employeeRevenue`
-- `serviceSnapshot`
+- `haircutSnapshot`, `shavingSnapshot`, `treatmentSnapshot`, `colouringSnapshot`, `chemicalSnapshot`
 
 Identitas agent dan branch berasal dari session dan data user. Harga dan pembagian hasil berasal dari database.
+
+**`employeeId` adalah pengecualian yang disengaja**: berbeda dengan `agentId`/`branchId`, field ini **wajib dikirim oleh client** dan tidak bisa diturunkan dari sesi — backend tidak punya cara lain untuk tahu siapa yang mengerjakan servis selain AGENT yang menginput memilihnya secara manual (§5.5, §5.13). Backend tetap memvalidasi `employeeId` merujuk ke `Employee` yang ada, aktif, dan satu cabang dengan transaksi — klien tidak dipercaya begitu saja, hanya identitasnya yang diterima sebagai input, bukan status/kebenarannya.
 
 ## 8.4. QRIS Payment Response
 
@@ -1418,10 +1564,12 @@ Struktur ini merupakan rekomendasi awal. Hindari membuat abstraksi berlebihan se
 - Manipulasi `branchId` dari client tidak melewati otorisasi.
 
 ## Transactions
-- Transaksi menggunakan harga service dari database.
-- Snapshot pembagian hasil tersimpan.
+- Transaksi menggunakan harga kategori servis (Haircut/Shaving/Treatment/Colouring/Chemical, §5.14) dari database, bukan dari request body.
+- Snapshot pembagian hasil tersimpan per kategori yang dipilih.
 - Kode transaksi unik.
-- Transaksi tidak dapat dibuat menggunakan service nonaktif.
+- Transaksi tidak dapat dibuat tanpa minimal satu kategori servis yang valid; tidak dapat dibuat dengan kategori id yang tidak ada.
+- Transaksi dengan >1 kategori menghitung pembagian hasil per kategori secara independen dan tidak mendistribusikan diskon kembali ke `ownerRevenue`/`employeeRevenue` (§5.14).
+- Transaksi tidak dapat dibuat tanpa `employee` yang valid, aktif, dan satu cabang dengan transaksi (§5.5, §5.13).
 - Nilai finansial tidak dapat dimanipulasi dari frontend.
 - Transaksi CANCELLED tidak masuk omzet.
 
@@ -1629,7 +1777,7 @@ Ketika `Subscription.status` milik HOST bernilai `PAST_DUE`/`EXPIRED`/`CANCELLED
 |---|---|
 | GET, POST | `/api/v1/customers` |
 | GET, PATCH | `/api/v1/customers/{id}` |
-| GET | `/api/v1/services`, `/api/v1/services/{id}` |
+| GET | `/api/v1/haircuts`, `/shavings`, `/treatments`, `/colourings`, `/chemicals` (dan `/{id}` masing-masing) |
 | POST | `/api/v1/transactions` |
 | GET | `/api/v1/transactions`, `/api/v1/transactions/{id}` |
 | POST | `/api/v1/transactions/{id}/complete` |
