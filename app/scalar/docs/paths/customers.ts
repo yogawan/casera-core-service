@@ -25,15 +25,14 @@ const customerFieldsSchema = {
   type: "object",
   properties: {
     name: { type: "string", minLength: 1, maxLength: 100 },
-    phone: { type: "string", maxLength: 32 },
-    email: { type: "string", format: "email", maxLength: 254 },
-    gender: {
+    cityFrom: { type: "string", maxLength: 100 },
+    age: { type: "integer", minimum: 0 },
+    busyness: {
       type: "string",
-      enum: ["MALE", "FEMALE", "OTHER", "UNSPECIFIED"],
+      maxLength: 500,
+      description: "Free text — descriptive, not an enum.",
     },
-    birthDate: { type: "string", format: "date" },
-    address: { type: "string", maxLength: 255 },
-    notes: { type: "string", maxLength: 1000 },
+    phone: { type: "string", maxLength: 32 },
   },
 };
 

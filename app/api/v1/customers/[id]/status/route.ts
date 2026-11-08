@@ -23,7 +23,7 @@ export const PATCH = withErrorHandling<{ id: string }>(
       throw zodErrorToAppError(parsed.error);
     }
 
-    const customer = await setCustomerStatus(id, parsed.data, user.role);
+    const customer = await setCustomerStatus(id, parsed.data);
     return successResponse({ customer });
   },
 );

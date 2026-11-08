@@ -2,19 +2,21 @@
 import { z } from "zod";
 import { paginationQueryFields } from "@/lib/pagination";
 
-// customerType and loyaltyPoints are deliberately absent from every schema
-// below: customerType's DECOY classification is explicitly deferred (§1),
-// and loyaltyPoints may only change through an auditable transaction
+// Narrowed per PRD §5.3 (2026-11-08): customerCode/email/gender/birthDate/
+// address/customerType/lastVisitAt no longer exist on the model at all —
+// not deferred, removed. loyaltyPoints is still deliberately absent from
+// every schema below: it may only change through an auditable transaction
 // mechanism, never a direct profile edit (§5.3). .strict() turns any
-// attempt to sneak them in into a clean 400 instead of a silent no-op.
+// attempt to sneak it (or a removed field) in into a clean 400 instead of
+// a silent no-op.
 const customerFields = {
   name: z.string().trim().min(1).max(100),
+  cityFrom: z.string().trim().max(100).optional(),
+  age: z.number().int().nonnegative().optional(),
+  // Free text — confirmed via user decision as descriptive, not an
+  // enum/number/boolean (§5.3 "Belum diputuskan" was resolved this way).
+  busyness: z.string().trim().max(500).optional(),
   phone: z.string().trim().max(32).optional(),
-  email: z.string().trim().toLowerCase().email().max(254).optional(),
-  gender: z.enum(["MALE", "FEMALE", "OTHER", "UNSPECIFIED"]).optional(),
-  birthDate: z.coerce.date().optional(),
-  address: z.string().trim().max(255).optional(),
-  notes: z.string().trim().max(1000).optional(),
 };
 
 export const createCustomerSchema = z.object(customerFields).strict();

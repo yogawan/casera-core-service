@@ -1,18 +1,38 @@
 // @/models/Customer.ts
 import { model, models, Schema } from "mongoose";
 
+// Narrowed structure per PRD §5.3 (decided 2026-11-08, executed here).
+// Removed from the previous shape: customerCode, email, gender, birthDate,
+// address, notes, customerType, lastVisitAt — none are part of the target
+// field set. `isActive`/`loyaltyPoints` carry over unchanged (still active
+// preconditions/earning logic elsewhere). `busyness` is free text — PRD
+// left its type undecided ("jangan diasumsikan sendiri"); confirmed via
+// user decision as descriptive text rather than enum/number/boolean.
+//
+// services/customerService.ts, validations/customerSchema.ts, and the
+// /customers routes still reference the removed fields as of this change —
+// migrating them is tracked separately (PRD §5.3, PLAN-GROOMA.md Phase 12),
+// out of scope for a models-only change.
 const CustomerSchema = new Schema(
   {
-    customerCode: {
-      type: String,
-      unique: true,
-      sparse: true,
-      trim: true,
-    },
-
     name: {
       type: String,
       required: true,
+      trim: true,
+    },
+
+    cityFrom: {
+      type: String,
+      trim: true,
+    },
+
+    age: {
+      type: Number,
+      min: 0,
+    },
+
+    busyness: {
+      type: String,
       trim: true,
     },
 
@@ -21,51 +41,15 @@ const CustomerSchema = new Schema(
       trim: true,
     },
 
-    email: {
-      type: String,
-      lowercase: true,
-      trim: true,
-    },
-
-    gender: {
-      type: String,
-      enum: ["MALE", "FEMALE", "OTHER", "UNSPECIFIED"],
-      default: "UNSPECIFIED",
-    },
-
-    birthDate: {
-      type: Date,
-    },
-
-    address: {
-      type: String,
-      trim: true,
-    },
-
-    notes: {
-      type: String,
-      trim: true,
-    },
-
-    customerType: {
-      type: String,
-      enum: ["DECOY", "REGULAR"],
-      default: "REGULAR",
+    isActive: {
+      type: Boolean,
+      default: true,
     },
 
     loyaltyPoints: {
       type: Number,
       default: 0,
       min: 0,
-    },
-
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
-
-    lastVisitAt: {
-      type: Date,
     },
   },
   {

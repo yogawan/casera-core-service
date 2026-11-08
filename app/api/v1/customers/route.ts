@@ -27,7 +27,7 @@ export const GET = withErrorHandling(async (request: NextRequest) => {
     throw zodErrorToAppError(parsedQuery.error);
   }
 
-  const result = await listCustomers(user.role, parsedQuery.data);
+  const result = await listCustomers(parsedQuery.data);
   return successResponse({
     customers: result.items,
     pagination: result.pagination,
@@ -45,6 +45,6 @@ export const POST = withErrorHandling(async (request: NextRequest) => {
     throw zodErrorToAppError(parsed.error);
   }
 
-  const customer = await createCustomer(parsed.data, user.role);
+  const customer = await createCustomer(parsed.data);
   return successResponse({ customer }, 201);
 });

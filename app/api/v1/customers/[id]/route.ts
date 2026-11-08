@@ -18,7 +18,7 @@ export const GET = withErrorHandling<{ id: string }>(
     requireRole(user, ["HOST", "AGENT"]);
     const { id } = await params;
 
-    const customer = await getCustomerById(id, user.role);
+    const customer = await getCustomerById(id);
     return successResponse({ customer });
   },
 );
@@ -36,7 +36,7 @@ export const PATCH = withErrorHandling<{ id: string }>(
       throw zodErrorToAppError(parsed.error);
     }
 
-    const customer = await updateCustomer(id, parsed.data, user.role);
+    const customer = await updateCustomer(id, parsed.data);
     return successResponse({ customer });
   },
 );

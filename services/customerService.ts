@@ -1,5 +1,4 @@
 // @/services/customerService.ts
-import type { SessionUser } from "@/lib/auth";
 import { Errors } from "@/lib/errors";
 import { connectDB } from "@/lib/mongodb";
 import { paginateQueries, paginationSkip, stableSort } from "@/lib/pagination";
@@ -38,52 +37,37 @@ function phoneVariants(phone: string): string[] {
 
 interface CustomerLike {
   _id: { toString(): string };
-  customerCode?: string | null;
   name: string;
+  cityFrom?: string | null;
+  age?: number | null;
+  busyness?: string | null;
   phone?: string | null;
-  email?: string | null;
-  gender?: string;
-  birthDate?: Date | null;
-  address?: string | null;
-  notes?: string | null;
-  customerType: string;
   loyaltyPoints: number;
-  lastVisitAt?: Date | null;
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
 
-// AGENT gets an operational subset; full PII (email, birthDate, address,
-// notes) is HOST-only (§5.3, §7.5). Disallowed fields are set to `undefined`
-// rather than omitted here so every caller can rely on one consistent
-// shape — `undefined` keys are dropped by JSON.stringify in the response.
-function serializeCustomer(customer: CustomerLike, role: SessionUser["role"]) {
-  const isPrivileged = role === "HOST";
-
+// PRD §5.3 (2026-11-08): cityFrom/age/busyness are visible to both HOST and
+// AGENT — unlike the email/gender/birthDate/address/notes fields they
+// replaced, none of the three were judged sensitive enough to restrict.
+// There is currently no role-gated field left on Customer at all.
+function serializeCustomer(customer: CustomerLike) {
   return {
     id: customer._id.toString(),
-    customerCode: customer.customerCode ?? null,
     name: customer.name,
+    cityFrom: customer.cityFrom ?? null,
+    age: customer.age ?? null,
+    busyness: customer.busyness ?? null,
     phone: customer.phone ?? null,
-    customerType: customer.customerType,
     loyaltyPoints: customer.loyaltyPoints,
-    lastVisitAt: customer.lastVisitAt ?? null,
     isActive: customer.isActive,
-    email: isPrivileged ? (customer.email ?? null) : undefined,
-    gender: isPrivileged ? customer.gender : undefined,
-    birthDate: isPrivileged ? (customer.birthDate ?? null) : undefined,
-    address: isPrivileged ? (customer.address ?? null) : undefined,
-    notes: isPrivileged ? (customer.notes ?? null) : undefined,
     createdAt: customer.createdAt,
     updatedAt: customer.updatedAt,
   };
 }
 
-export async function createCustomer(
-  input: CreateCustomerInput,
-  role: SessionUser["role"],
-) {
+export async function createCustomer(input: CreateCustomerInput) {
   await connectDB();
 
   if (input.phone) {
@@ -91,18 +75,15 @@ export async function createCustomer(
     const existing = await CustomerModel.findOne({ phone: { $in: variants } });
     if (existing) {
       // Don't let formatting differences spawn a duplicate customer record.
-      return serializeCustomer(existing, role);
+      return serializeCustomer(existing);
     }
   }
 
   const customer = await CustomerModel.create(input);
-  return serializeCustomer(customer, role);
+  return serializeCustomer(customer);
 }
 
-export async function listCustomers(
-  role: SessionUser["role"],
-  query: ListCustomersQuery,
-) {
+export async function listCustomers(query: ListCustomersQuery) {
   await connectDB();
 
   const filter: Record<string, unknown> = {};
@@ -119,9 +100,8 @@ export async function listCustomers(
     filter.$or = orConditions;
   }
 
-  // serializeCustomer runs after pagination, on the page's rows only — field
-  // redaction is per-row and order-independent, so there is no reason to
-  // hydrate the whole collection to slice 20 out of it.
+  // serializeCustomer runs after pagination, on the page's rows only — no
+  // reason to hydrate the whole collection to slice 20 out of it.
   const { items, pagination } = await paginateQueries(
     CustomerModel.find(filter)
       .sort(stableSort({ name: 1 }))
@@ -132,12 +112,12 @@ export async function listCustomers(
   );
 
   return {
-    items: items.map((customer) => serializeCustomer(customer, role)),
+    items: items.map((customer) => serializeCustomer(customer)),
     pagination,
   };
 }
 
-export async function getCustomerById(id: string, role: SessionUser["role"]) {
+export async function getCustomerById(id: string) {
   await connectDB();
   const customer = await CustomerModel.findById(id);
 
@@ -145,14 +125,10 @@ export async function getCustomerById(id: string, role: SessionUser["role"]) {
     throw Errors.notFound("Customer not found.");
   }
 
-  return serializeCustomer(customer, role);
+  return serializeCustomer(customer);
 }
 
-export async function updateCustomer(
-  id: string,
-  input: UpdateCustomerInput,
-  role: SessionUser["role"],
-) {
+export async function updateCustomer(id: string, input: UpdateCustomerInput) {
   await connectDB();
   const customer = await CustomerModel.findById(id);
 
@@ -161,15 +137,13 @@ export async function updateCustomer(
   }
 
   if (input.name !== undefined) customer.name = input.name;
+  if (input.cityFrom !== undefined) customer.cityFrom = input.cityFrom;
+  if (input.age !== undefined) customer.age = input.age;
+  if (input.busyness !== undefined) customer.busyness = input.busyness;
   if (input.phone !== undefined) customer.phone = input.phone;
-  if (input.email !== undefined) customer.email = input.email;
-  if (input.gender !== undefined) customer.gender = input.gender;
-  if (input.birthDate !== undefined) customer.birthDate = input.birthDate;
-  if (input.address !== undefined) customer.address = input.address;
-  if (input.notes !== undefined) customer.notes = input.notes;
 
   await customer.save();
-  return serializeCustomer(customer, role);
+  return serializeCustomer(customer);
 }
 
 // $inc is atomic — safe under concurrent credits/reversals for the same
@@ -226,7 +200,6 @@ export async function reverseLoyaltyPoints(
 export async function setCustomerStatus(
   id: string,
   input: SetCustomerStatusInput,
-  role: SessionUser["role"],
 ) {
   await connectDB();
   const customer = await CustomerModel.findById(id);
@@ -238,5 +211,5 @@ export async function setCustomerStatus(
   customer.isActive = input.isActive;
   await customer.save();
 
-  return serializeCustomer(customer, role);
+  return serializeCustomer(customer);
 }
