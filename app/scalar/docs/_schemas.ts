@@ -158,6 +158,37 @@ export const User = {
   },
 };
 
+// PRD §7.3a / Phase 13 — read-only view of an Employee record for the
+// transaction dropdown. Only the fields needed for AGENT to identify and pick
+// the correct employee are exposed; payroll fields are deliberately absent.
+export const EmployeeListItem = {
+  type: "object",
+  properties: {
+    _id: { type: "string" },
+    name: {
+      type: "string",
+      description: "Populated from the linked User document (User.name).",
+    },
+    branch: {
+      type: "object",
+      nullable: true,
+      description: "Populated branch reference — _id and name only.",
+      properties: {
+        _id: { type: "string" },
+        name: { type: "string" },
+      },
+      required: ["_id", "name"],
+    },
+    employmentStatus: {
+      type: "string",
+      enum: ["ACTIVE"],
+      description:
+        "Always ACTIVE in this endpoint — RESIGNED/SUSPENDED employees are filtered out server-side and cannot appear here.",
+    },
+  },
+  required: ["_id", "name", "branch", "employmentStatus"],
+};
+
 // PRD §5.3 (narrowed 2026-11-08): customerCode/email/gender/birthDate/
 // address/notes/customerType/lastVisitAt no longer exist on the model.
 // Replaced by cityFrom/age/busyness — all visible to both HOST and AGENT,
@@ -535,6 +566,7 @@ export const schemas = {
   PaginationAlt,
   Branch,
   User,
+  EmployeeListItem,
   Customer,
   Haircut,
   Shaving,

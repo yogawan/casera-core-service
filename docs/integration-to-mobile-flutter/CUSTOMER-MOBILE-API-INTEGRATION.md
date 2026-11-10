@@ -1,18 +1,47 @@
 # Integrasi Mobile (Flutter) — Grooma API — Modul Customer
 
-> Dokumen ini khusus modul **Customer**. Base URL, model sesi cookie, dan setup `dio` **tidak diulang di sini** — lihat `docs/AUTH-MOBILE-API-INTEGRATION.md` bagian 1–2.
+> Dokumen ini khusus modul **Customer**. Base URL, model sesi cookie, dan setup `dio` **tidak diulang di sini** — lihat `docs/AUTH-MOBILE-API-INTEGRATION.md` bagian 1–2. Kontrak pagination juga tidak diulang — lihat bagian 2.1 dokumen yang sama.
+
+> **Diperbarui penuh berdasarkan audit langsung ke kode** (`models/Customer.ts`, `validations/customerSchema.ts`, `services/customerService.ts`, `app/api/v1/customers/**`) — bukan disalin dari versi dokumen sebelumnya. Setiap klaim di dokumen ini bisa ditelusuri balik ke salah satu file itu.
 
 ---
 
-## 0. Dua Hal Penting yang Beda dari Modul Lain
+## 0. ⚠️ Breaking Change — Struktur Customer Dirombak (PRD §5.3, dieksekusi 2026-11-08)
 
-1. **Customer TIDAK terikat cabang sama sekali.** Tidak ada field `branch` di model Customer, dan tidak ada pengecekan branch-access di endpoint manapun di modul ini (beda dari Transaksi/Inventaris yang selalu `requireBranchAccess`). Semua customer **dibagi lintas cabang** dalam satu bisnis — AGENT dari cabang manapun bisa lihat & edit customer yang sama, bukan cuma customer "milik" cabangnya.
+**Field yang dihapus total dari model** — bukan disembunyikan, benar-benar tidak ada lagi. Kalau client lama masih mengirim salah satu ini di `POST`/`PATCH`, sekarang ditolak `400 VALIDATION_ERROR` (schema `.strict()`), bukan diabaikan secara diam-diam:
 
-2. **Bentuk response BEDA tergantung role yang login — bukan cuma soal boleh/tidak boleh akses.** 5 field (`email`, `gender`, `birthDate`, `address`, `notes`) **hanya muncul di response untuk HOST**. Untuk AGENT, kelima key itu **tidak ada sama sekali** di JSON (bukan `null`, bukan string kosong — key-nya benar-benar absen). Ini berlaku di **semua** endpoint yang mengembalikan data customer (list, detail, create, update, status), termasuk saat AGENT sendiri yang baru melakukan create/update. Jangan bikin model Dart dengan field-field itu sebagai non-nullable/required — parsing response AGENT akan gagal.
+`customerCode`, `email`, `gender`, `birthDate`, `address`, `notes`, `customerType`, `lastVisitAt`
+
+**Field baru, menggantikan field privasi di atas:**
+
+| Field | Tipe | Catatan |
+|---|---|---|
+| `cityFrom` | `string`, optional, maks 100 | Kota asal customer — bukan alamat lengkap |
+| `age` | `integer` ≥ 0, optional | Umur — bukan tanggal lahir |
+| `busyness` | `string` bebas, optional, maks 500 | Deskripsi naratif ketersediaan/kesibukan customer. **Teks bebas tanpa enum/format** — bukan boolean, bukan angka, bukan pilihan tetap |
+
+**Perubahan paling besar untuk app: tidak ada lagi perbedaan response berdasarkan role.** Versi dokumen ini yang lama punya section yang menjelaskan AGENT tidak pernah menerima `email`/`gender`/`birthDate`/`address`/`notes` di response manapun, sementara HOST menerima semuanya. **Itu sudah sepenuhnya tidak berlaku.** Kelima field itu sudah tidak ada di model untuk siapa pun, dan `cityFrom`/`age`/`busyness` yang menggantikannya dikonfirmasi **tidak dibatasi perannya** (PRD §5.3: "AGENT dan HOST menerima bentuk response Customer yang identik"). Di kode, `serializeCustomer()` di `services/customerService.ts` bahkan sudah tidak menerima parameter `role` sama sekali — tidak ada lagi field Customer yang bisa dibedakan per role.
+
+**Kalau app punya 2 model Dart (HOST-view vs AGENT-view) atau logic apa pun yang mem-parsing response Customer berbeda berdasarkan role yang login, itu harus dihapus — satu model cukup untuk kedua role sekarang.**
+
+**Tidak berubah** — aman dipertahankan dari implementasi lama:
+- `name`, `phone`, `isActive`, `loyaltyPoints` — tipe, aturan, dan perilakunya identik seperti sebelumnya.
+- Customer tetap tidak terikat cabang sama sekali (§1 di bawah).
+- Normalisasi & dedupe nomor HP saat search & create (§3.1, §4 di bawah).
+- Kontrak pagination `GET /customers` (lihat `AUTH-MOBILE-API-INTEGRATION.md` §2.1) — ini berubah di Phase 9 (2026-10-19), **sebelum** restrukturisasi field ini, dan tidak tersentuh oleh perubahan field.
+- Perilaku "`201` tidak selalu berarti record baru" saat create (§4 di bawah).
+
+**Tidak ada migrasi data untuk customer lama** (dikonfirmasi final, PRD §5.3) — dokumen `Customer` yang dibuat sebelum perubahan ini masih menyimpan field lama secara fisik di database, tapi Mongoose mengabaikannya total (tidak error, tidak terbaca, tidak pernah muncul di response). Tidak ada aksi yang perlu dilakukan dari sisi app untuk ini — API-nya sendiri sudah konsisten untuk data lama maupun baru.
 
 ---
 
-## 1. Ringkasan
+## 1. Hal yang Tetap Beda dari Modul Lain
+
+**Customer TIDAK terikat cabang sama sekali.** Tidak ada field `branch` di `models/Customer.ts`, dan tidak ada satu pun pemanggilan `requireBranchAccess` di ketiga route handler modul ini (beda dari Transaksi/Inventaris yang selalu memvalidasi cabang). Semua customer **dibagi lintas cabang** dalam satu bisnis — AGENT dari cabang manapun bisa lihat & edit customer yang sama, bukan cuma customer "milik" cabangnya.
+
+---
+
+## 2. Ringkasan
 
 | Method | Endpoint | Role | Subscription Policy |
 |---|---|---|---|
@@ -20,13 +49,13 @@
 | POST | `/api/v1/customers` | HOST, AGENT | `EXEMPT_AGENT` |
 | GET | `/api/v1/customers/:id` | HOST, AGENT | `EXEMPT_AGENT` |
 | PATCH | `/api/v1/customers/:id` | HOST, AGENT | `EXEMPT_AGENT` |
-| PATCH | `/api/v1/customers/:id/status` | **HOST only** | `ENFORCED` (default) — tidak relevan karena AGENT sudah `403` duluan |
+| PATCH | `/api/v1/customers/:id/status` | **HOST only** | `ENFORCED` (default) |
 
-4 dari 5 endpoint `EXEMPT_AGENT` — AGENT tetap bisa cari/buat/lihat/edit customer meski subscription HOST nunggak (bagian dari alur melayani customer yang sedang di tempat). Mengaktifkan/nonaktifkan customer murni keputusan administratif HOST, tidak dikecualikan.
+4 dari 5 endpoint `EXEMPT_AGENT` (`lib/authorization.ts`) — AGENT tetap bisa cari/buat/lihat/edit customer meski subscription HOST-nya nunggak, bagian dari alur melayani customer yang sedang di tempat (PRD §23.4.1). Mengaktifkan/nonaktifkan customer murni keputusan administratif HOST, tidak dikecualikan — detail urutan 402/403-nya ada di §7.
 
 ---
 
-## 2. GET /api/v1/customers — Cari/List Customer
+## 3. GET /api/v1/customers — Cari/List Customer
 
 ### Query Params
 
@@ -34,28 +63,24 @@
 |---|---|---|---|
 | `page` | `integer` | `1` | |
 | `limit` | `integer` | `20` | Maks `100` |
-| `search` | `string` | — | Maks 100 karakter. Cocok ke `name` (regex, case-insensitive) **atau** `phone` (lihat normalisasi di §2.1) |
+| `search` | `string` | — | Maks 100 karakter. Cocok ke `name` (regex, case-insensitive) **atau** `phone` (lihat normalisasi di §3.1) |
 
-Terurut alfabetis berdasarkan `name` (tie-breaker `_id`, jadi urutannya stabil antar halaman). Kontrak pagination lengkapnya di `AUTH-MOBILE-API-INTEGRATION.md` §2.1.
+Terurut alfabetis berdasarkan `name` (tie-breaker `_id`, jadi urutannya stabil antar halaman — `stableSort({ name: 1 })` di `services/customerService.ts`). Kontrak pagination lengkapnya di `AUTH-MOBILE-API-INTEGRATION.md` §2.1.
 
-✅ **Endpoint ini sekarang berpaginasi.** *(Berubah 2026-10-19 — sebelumnya tidak ada `page`/`limit` sama sekali, dan tanpa `search` endpoint ini mengembalikan SELURUH tabel customer dalam satu response.)*
+**Dua catatan kompatibilitas `search` (berlaku sejak Phase 9, tidak tersentuh restrukturisasi field):**
 
-**Yang berubah untuk app:** `data.customers` tetap ada dan bentuk itemnya tidak berubah, jadi kode parsing lama tetap jalan. Yang berubah adalah **jumlah barisnya dibatasi 20 per default**. Layar yang dulu menerima seluruh basis customer sekarang menerima 20 pertama tanpa error apa pun.
+1. **`?search=` kosong tetap berarti "tanpa filter"**, bukan `400` — schema query-nya (`listCustomersQuerySchema`) men-transform string kosong jadi `undefined`. Search box yang dikosongkan user aman mengirim string kosong. *(Catatan: `/inventory` dan `/transactions` justru menolak `?search=` kosong dengan `400` — beda perilaku, jangan diasumsikan seragam antar modul.)*
+2. **`search` dibatasi 100 karakter** (`400` kalau lebih).
 
-**Dua catatan kompatibilitas `search`:**
+**Rekomendasi UI:** desain search-first dengan debounce 2–3 karakter. "Browse semua customer" bisa dilakukan lewat infinite scroll (`page` naik sampai `page >= totalPages`) — pakai `pagination.total` untuk menampilkan jumlah hasil, bukan `customers.length`.
 
-1. **`?search=` kosong tetap berarti "tanpa filter"**, bukan `400` — persis seperti perilaku lama. Search box yang dikosongkan user aman mengirim string kosong; backend menormalkannya jadi "tidak ada filter". *(Catatan: `/inventory` dan `/transactions` justru menolak `?search=` kosong dengan `400` — beda perilaku yang sudah ada sejak sebelum perubahan ini, jangan diasumsikan seragam.)*
-2. **`search` sekarang dibatasi 100 karakter** (`400` kalau lebih). Sebelumnya tidak ada batas. Tidak berdampak pada input manusia normal, tapi kalau app pernah mengirim isi clipboard mentah ke field ini, tambahkan `maxLength` di sisi UI.
+### 3.1. Normalisasi Nomor HP — Tidak Perlu Dilakukan di Client
 
-**Rekomendasi UI tetap sama, dan sekarang lebih aman:** desain search-first dengan debounce 2–3 karakter. Bedanya, "browse semua customer" sekarang **bisa** dilakukan dengan benar lewat infinite scroll (`page` naik sampai `page >= totalPages`) tanpa menarik ribuan baris sekaligus — pakai `pagination.total` untuk menampilkan jumlah hasil, bukan `customers.length`.
-
-### 2.1. Normalisasi Nomor HP — Tidak Perlu Dilakukan di Client
-
-Backend otomatis mencocokkan varian format nomor Indonesia saat `search` maupun saat deteksi duplikat di create (§3): `0812xxxxxxx`, `62812xxxxxxx`, dan `+62812xxxxxxx` dianggap **nomor yang sama**. Kirim apa adanya dari input user, tidak perlu normalisasi manual di Flutter sebelum search/create.
+Backend otomatis mencocokkan varian format nomor Indonesia saat `search` maupun saat deteksi duplikat di create (§4): `0812xxxxxxx`, `62812xxxxxxx`, dan `+62812xxxxxxx` dianggap **nomor yang sama** (`normalizePhone`/`phoneVariants` di `services/customerService.ts`). Kirim apa adanya dari input user, tidak perlu normalisasi manual di Flutter sebelum search/create.
 
 ### Response `200 OK`
 
-**Dilihat oleh HOST** (semua field muncul):
+**Bentuk response, identik untuk HOST maupun AGENT** (lihat §0 — tidak ada lagi perbedaan per role):
 
 ```json
 {
@@ -64,42 +89,12 @@ Backend otomatis mencocokkan varian format nomor Indonesia saat `search` maupun 
     "customers": [
       {
         "id": "66aa11bb22cc33dd44ee55ff",
-        "customerCode": null,
         "name": "Andi Wijaya",
+        "cityFrom": "Bandung",
+        "age": 29,
+        "busyness": "Biasanya available siang hari kerja",
         "phone": "6281234567890",
-        "customerType": "REGULAR",
         "loyaltyPoints": 450,
-        "lastVisitAt": "2026-10-10T09:00:00.000Z",
-        "isActive": true,
-        "email": "andi@example.com",
-        "gender": "MALE",
-        "birthDate": "1995-05-20T00:00:00.000Z",
-        "address": "Jl. Kemang Raya No. 10",
-        "notes": "Suka potongan fade",
-        "createdAt": "2026-01-10T08:00:00.000Z",
-        "updatedAt": "2026-10-10T09:00:00.000Z"
-      }
-    ],
-    "pagination": { "page": 1, "limit": 20, "total": 1340, "totalPages": 67 }
-  }
-}
-```
-
-**Dilihat oleh AGENT** (5 key PII hilang total, bukan `null`):
-
-```json
-{
-  "success": true,
-  "data": {
-    "customers": [
-      {
-        "id": "66aa11bb22cc33dd44ee55ff",
-        "customerCode": null,
-        "name": "Andi Wijaya",
-        "phone": "6281234567890",
-        "customerType": "REGULAR",
-        "loyaltyPoints": 450,
-        "lastVisitAt": "2026-10-10T09:00:00.000Z",
         "isActive": true,
         "createdAt": "2026-01-10T08:00:00.000Z",
         "updatedAt": "2026-10-10T09:00:00.000Z"
@@ -110,13 +105,11 @@ Backend otomatis mencocokkan varian format nomor Indonesia saat `search` maupun 
 }
 ```
 
-Perhatikan: tidak ada `"email": null` di response AGENT — key `email`/`gender`/`birthDate`/`address`/`notes` memang tidak dikirim sama sekali.
-
-Objek `pagination` **identik untuk kedua role** — perbedaan per-role di modul ini murni soal field PII di dalam item (§0), tidak menyentuh metadata pagination. `total` juga sama untuk kedua role, karena customer tidak disaring per role maupun per cabang.
+`cityFrom`/`age`/`busyness` muncul sebagai `null` (bukan absen) kalau belum pernah diisi — berbeda dari field lama yang dihapus total (§0), field-field baru ini **selalu ada sebagai key**, nilainya saja yang bisa `null`. Aman dimodelkan sebagai field nullable non-absen di Dart.
 
 ---
 
-## 3. POST /api/v1/customers — Buat Customer
+## 4. POST /api/v1/customers — Buat Customer
 
 ### Request Body
 
@@ -124,11 +117,9 @@ Objek `pagination` **identik untuk kedua role** — perbedaan per-role di modul 
 {
   "name": "Siti Rahma",
   "phone": "081298765432",
-  "email": "siti@example.com",
-  "gender": "FEMALE",
-  "birthDate": "1998-03-15",
-  "address": "Jl. Melati No. 5",
-  "notes": "Alergi produk tertentu"
+  "cityFrom": "Jakarta",
+  "age": 34,
+  "busyness": "Sering available weekend"
 }
 ```
 
@@ -136,41 +127,41 @@ Objek `pagination` **identik untuk kedua role** — perbedaan per-role di modul 
 |---|---|---|---|
 | `name` | `string` | **Ya** | 1–100 karakter |
 | `phone` | `string` | Tidak | Maks 32 karakter |
-| `email` | `string` | Tidak | Format email valid, maks 254 |
-| `gender` | `"MALE"\|"FEMALE"\|"OTHER"\|"UNSPECIFIED"` | Tidak | Default `"UNSPECIFIED"` |
-| `birthDate` | `string` (ISO 8601) | Tidak | |
-| `address` | `string` | Tidak | Maks 255 |
-| `notes` | `string` | Tidak | Maks 1000 |
+| `cityFrom` | `string` | Tidak | Maks 100 karakter |
+| `age` | `integer` | Tidak | ≥ 0, tidak ada batas atas di validasi |
+| `busyness` | `string` | Tidak | Maks 500 karakter, teks bebas |
 
-Schema **strict**. `customerType` dan `loyaltyPoints` **tidak ada di schema manapun** (create/update) — tidak bisa diset langsung lewat API ini sama sekali. `customerType` selalu `"REGULAR"` di praktiknya (klasifikasi `"DECOY"` ditunda, belum ada jalur untuk menandainya). `loyaltyPoints` hanya berubah lewat mekanisme transaksi (credit otomatis saat transaksi lunas, reverse saat dibatalkan) — tidak pernah lewat endpoint customer manapun.
+Schema **strict** (`createCustomerSchema` di `validations/customerSchema.ts`). `loyaltyPoints` **tidak ada di schema manapun** (create/update) — tidak bisa diset langsung lewat API ini sama sekali, hanya berubah lewat mekanisme transaksi (credit otomatis saat transaksi lunas, reverse saat dibatalkan).
 
 ### ⚠️ `201` Tidak Selalu Berarti Record Baru
 
-Kalau `phone` yang dikirim cocok dengan customer yang **sudah ada** (termasuk kalau beda format penulisan, lihat §2.1), backend **mengembalikan customer yang sudah ada itu** — tetap dengan status `201`, bukan `409`/`200`. Jangan asumsikan response `201` dari endpoint ini selalu berisi data kosong/baru sesuai yang baru diketik — cek dulu apakah `name`/field lain di response sama dengan yang baru diketik user; kalau beda, berarti itu match ke customer lama (mis. AGENT ketik "Andi" tapi nomornya cocok ke customer bernama "Andi Wijaya" yang sudah tercatat lengkap).
+Kalau `phone` yang dikirim cocok dengan customer yang **sudah ada** (termasuk kalau beda format penulisan, lihat §3.1), backend **mengembalikan customer yang sudah ada itu** — tetap dengan status `201`, bukan `409`/`200`. Jangan asumsikan response `201` dari endpoint ini selalu berisi data kosong/baru sesuai yang baru diketik — cek dulu apakah `name`/field lain di response sama dengan yang baru diketik user; kalau beda, berarti itu match ke customer lama.
 
 ### Status Code
 
 | Status | `error.code` | Kapan |
 |---|---|---|
 | `201` | — | Berhasil dibuat **atau** cocok ke customer existing by phone (lihat di atas) |
-| `400` | `VALIDATION_ERROR` | `name` kosong, `email` bukan format valid, field asing, dll |
+| `400` | `VALIDATION_ERROR` | `name` kosong, field asing (termasuk field lama yang sudah dihapus, lihat §0), `age` negatif/bukan integer, dll |
+| `402` | `PAYMENT_REQUIRED` | Hanya bisa kena HOST — endpoint ini `EXEMPT_AGENT` |
 | `403` | `FORBIDDEN` | Bukan HOST/AGENT |
 
 ---
 
-## 4. GET /api/v1/customers/:id — Detail Customer
+## 5. GET /api/v1/customers/:id — Detail Customer
 
-Bentuk response sama seperti satu item di `customers[]` pada §2 (beda per role, lihat §0), dibungkus `{ customer: {...} }`.
+Bentuk response sama seperti satu item di `customers[]` pada §3, dibungkus `{ customer: {...} }`. Identik untuk HOST maupun AGENT (§0).
 
 | Status | Kapan |
 |---|---|
 | `200` | Sukses |
-| `403` | Bukan HOST/AGENT (**tidak ada** pengecekan cabang — siapapun HOST/AGENT bisa lihat customer manapun) |
+| `402` | `PAYMENT_REQUIRED` — hanya bisa kena HOST (endpoint ini `EXEMPT_AGENT`) |
+| `403` | Bukan HOST/AGENT (**tidak ada** pengecekan cabang — siapa pun HOST/AGENT bisa lihat customer manapun, §1) |
 | `404` | Customer tidak ditemukan |
 
 ---
 
-## 5. PATCH /api/v1/customers/:id — Update Customer
+## 6. PATCH /api/v1/customers/:id — Update Customer
 
 ### Request Body (semua optional, field sama seperti create)
 
@@ -178,26 +169,25 @@ Bentuk response sama seperti satu item di `customers[]` pada §2 (beda per role,
 |---|---|
 | `name` | `string`, 1–100 |
 | `phone` | `string`, maks 32 |
-| `email` | `string`, format email |
-| `gender` | enum |
-| `birthDate` | `string` (ISO 8601) |
-| `address` | `string`, maks 255 |
-| `notes` | `string`, maks 1000 |
+| `cityFrom` | `string`, maks 100 |
+| `age` | `integer` ≥ 0 |
+| `busyness` | `string`, maks 500 |
 
-⚠️ **AGENT bisa MENGISI field `email`/`gender`/`birthDate`/`address`/`notes` lewat PATCH ini, walaupun AGENT tidak akan pernah bisa MEMBACA field itu balik lagi di response manapun.** Validasi di backend tidak membedakan role untuk field mana yang boleh ditulis — pembatasan role di sini **murni soal apa yang dikembalikan**, bukan apa yang bisa ditulis. Kalau form edit untuk AGENT di Flutter menyembunyikan field-field itu dari UI (yang memang disarankan), itu sudah cukup untuk mencegah AGENT menulisnya secara normal — tapi jangan sampai ada kode lain di app yang tidak sengaja ikut mengirim field-field itu (mis. hasil round-trip dari cache HOST) saat submit PATCH sebagai AGENT, karena backend tidak akan menolaknya.
+Schema **strict** juga (`updateCustomerSchema`) — kirim field lama yang sudah dihapus (§0) akan ditolak `400`, bukan diabaikan.
 
 | Status | `error.code` | Kapan |
 |---|---|---|
 | `200` | — | Sukses, body `{customer}` |
 | `400` | `VALIDATION_ERROR` | Field tidak sesuai schema |
+| `402` | `PAYMENT_REQUIRED` | Hanya bisa kena HOST (endpoint ini `EXEMPT_AGENT`) |
 | `403` | `FORBIDDEN` | Bukan HOST/AGENT |
 | `404` | `NOT_FOUND` | Customer tidak ditemukan |
 
 ---
 
-## 6. PATCH /api/v1/customers/:id/status — Aktifkan/Nonaktifkan
+## 7. PATCH /api/v1/customers/:id/status — Aktifkan/Nonaktifkan
 
-**HOST only.** Satu-satunya endpoint di modul ini yang AGENT tidak bisa akses sama sekali (403), sesuai PRD §3.2 ("AGENT ... kecuali nonaktifkan status").
+**HOST only.** Satu-satunya endpoint di modul ini yang AGENT tidak bisa akses dengan sukses, sesuai PRD §3.2 ("AGENT ... kecuali nonaktifkan status").
 
 ### Request Body
 
@@ -213,31 +203,45 @@ Bentuk response sama seperti satu item di `customers[]` pada §2 (beda per role,
 |---|---|---|
 | `200` | — | Sukses, body `{customer}` |
 | `400` | `VALIDATION_ERROR` | `isActive` tidak dikirim/bukan boolean |
-| `403` | `FORBIDDEN` | Bukan HOST |
+| `402` | `PAYMENT_REQUIRED` | Lihat catatan presedensi di bawah — **ini beda dari 4 endpoint lain di modul ini** |
+| `403` | `FORBIDDEN` | Bukan HOST (dan subscription tidak sedang lapsed — lihat catatan di bawah) |
 | `404` | `NOT_FOUND` | Customer tidak ditemukan |
 
-Tidak ada efek lanjutan otomatis ke transaksi lama milik customer ini — menonaktifkan customer tidak mengubah riwayat transaksinya. Efeknya baru terasa ke depan: transaksi baru tidak bisa dibuat dengan customer yang `isActive: false` (lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §1 — `422 "Customer is not available."`).
+**⚠️ Catatan presedensi 402 vs 403 — ditemukan saat audit kode, koreksi dari versi dokumen sebelumnya.** Endpoint ini pakai policy `ENFORCED` (default), bukan `EXEMPT_AGENT` seperti 4 endpoint lain di modul ini. Di `app/api/v1/customers/[id]/status/route.ts`, urutan pemanggilannya adalah `requireAuth()` (termasuk cek subscription) **dulu**, baru `requireRole(user, ["HOST"])`. Konsekuensinya: **kalau subscription HOST sedang `PAST_DUE`/`EXPIRED`/`CANCELLED` dan AGENT (keliru) memanggil endpoint ini, response-nya `402 PAYMENT_REQUIRED` — bukan `403 FORBIDDEN`.** Urutan "403 duluan" hanya benar selama subscription HOST aktif atau belum pernah dibuat. App tidak perlu menangani ini secara khusus di UI (hasil akhirnya AGENT tetap tidak bisa mengaktifkan/nonaktifkan customer apa pun status code-nya) — ini murni koreksi presisi dokumentasi.
+
+Tidak ada efek lanjutan otomatis ke transaksi lama milik customer ini — menonaktifkan customer tidak mengubah riwayat transaksinya. Efeknya baru terasa ke depan: transaksi baru tidak bisa dibuat dengan customer yang `isActive: false` (lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §1 — `422 "Customer is not available."`; dokumen itu sendiri belum diperbarui untuk restrukturisasi kategori servis/employee Phase 10–11, di luar scope audit ini).
 
 ---
 
-## 7. Status Code — Ringkasan
+## 8. Status Code — Ringkasan
 
 | Status | `error.code` | Catatan |
 |---|---|---|
 | `400` | `VALIDATION_ERROR` | |
 | `401` | `UNAUTHENTICATED` | |
-| `402` | `PAYMENT_REQUIRED` | Hanya mungkin kena HOST (§1) |
-| `403` | `FORBIDDEN` | Role salah — **tidak pernah karena beda cabang**, modul ini tidak kenal konsep cabang |
+| `402` | `PAYMENT_REQUIRED` | Di 4 endpoint `EXEMPT_AGENT` (§2), hanya bisa kena HOST. Di `PATCH .../status` (`ENFORCED`, §7), bisa kena HOST **atau** AGENT kalau subscription HOST sedang lapsed — lihat catatan presedensi di §7 |
+| `403` | `FORBIDDEN` | Role salah — **tidak pernah karena beda cabang**, modul ini tidak kenal konsep cabang (§1) |
 | `404` | `NOT_FOUND` | |
 | `500` | `INTERNAL_ERROR` | |
 
 ---
 
-## 8. Catatan Implementasi Flutter
+## 9. Catatan Implementasi Flutter
 
-- **Buat 2 variant model Dart (atau semua field privileged nullable) untuk Customer** — field `email`/`gender`/`birthDate`/`address`/`notes` bisa benar-benar absen dari JSON tergantung role yang login (§0). Model dengan field itu non-nullable akan gagal parse response AGENT.
-- **Form edit customer untuk AGENT: sembunyikan 5 field privileged dari UI** — bukan karena backend menolaknya (backend tidak menolak, lihat §5), tapi supaya AGENT tidak bisa menulis data yang mereka sendiri tidak bisa lihat/verifikasi.
-- **Endpoint list (§2) sekarang berpaginasi, default 20 baris** — dulu tidak. Layar yang menampilkan hasil search panjang butuh infinite scroll; berhenti saat `page >= totalPages`. Tampilkan jumlah hasil dari `pagination.total`, bukan `customers.length` (yang sekarang maksimal 20).
-- **Search box boleh tetap mengirim string kosong** saat dikosongkan user (§2) — backend menganggapnya "tanpa filter", sama seperti sebelumnya. Tapi tambahkan `maxLength: 100` di field-nya, karena kiriman lebih panjang sekarang ditolak `400`.
-- **Jangan asumsikan `201` dari create = data kosong baru** — selalu render response-nya, bukan input form-nya, karena bisa saja backend mengembalikan customer lama yang sudah match by phone (§3).
-- **Tidak perlu filter berdasarkan cabang di UI manapun untuk modul ini** — berbeda dari Transaksi/Inventaris, AGENT di sini melihat seluruh basis customer bisnis, bukan cuma cabangnya.
+- **Hapus logic/model Dart yang membedakan response Customer per role** (§0) — kalau ada 2 varian model (HOST-view vs AGENT-view) dari implementasi sebelumnya, konsolidasikan jadi satu. Tidak ada lagi field yang absen tergantung siapa yang login.
+- **Satu model Dart untuk Customer, dengan `cityFrom`/`age`/`busyness` nullable** (§0, §3) — ketiganya optional di create/update dan bisa `null` di response, tapi **selalu ada sebagai key** (beda dari field lama yang benar-benar absen sebelum restrukturisasi ini).
+- **Form create/edit customer: ganti field `email`/`gender`/`birthDate`/`address`/`notes` dengan `cityFrom`/`age`/`busyness`** — field lama akan ditolak `400` kalau masih dikirim (§0). Ini breaking change murni di layer form, bukan sekadar field tambahan.
+- **Endpoint list (§3) tetap berpaginasi, default 20 baris** — perilaku ini dari Phase 9 (2026-10-19), tidak berubah oleh restrukturisasi field. Infinite scroll berhenti saat `page >= totalPages`; tampilkan jumlah hasil dari `pagination.total`, bukan `customers.length`.
+- **Search box boleh tetap mengirim string kosong** saat dikosongkan user (§3) — backend menganggapnya "tanpa filter". Tambahkan `maxLength: 100` di field-nya.
+- **Jangan asumsikan `201` dari create = data kosong baru** — selalu render response-nya, bukan input form-nya, karena bisa saja backend mengembalikan customer lama yang sudah match by phone (§4).
+- **Tidak perlu filter berdasarkan cabang di UI manapun untuk modul ini** (§1) — AGENT di sini melihat seluruh basis customer bisnis, bukan cuma cabangnya.
+- **Endpoint status (§7) bisa balas `402` untuk AGENT juga**, bukan cuma HOST — kalau app punya penanganan error generik per status code (bukan per endpoint), ini sudah otomatis tertangani; kalau ada logic yang berasumsi "402 di modul Customer = pasti HOST", perbaiki asumsinya.
+
+---
+
+## 10. Belum Diperiksa / Di Luar Scope Audit Ini
+
+Tidak ditemukan blocker atau spesifikasi yang belum tersedia untuk modul Customer sendiri — seluruh endpoint, schema, dan service function di atas diverifikasi langsung dari kode yang sudah dieksekusi penuh (PLAN-GROOMA.md Phase 12, status ✅). Dua hal berikut **disengaja** tidak disentuh karena di luar cakupan modul Customer:
+
+- **`TRANSACTION-MOBILE-API-INTEGRATION.md`** menampilkan `customer` dalam bentuk populated minimal (`_id`, `name`, `phone`) di response transaksi — bentuk ini **tidak terpengaruh** oleh restrukturisasi field Customer (field yang ditampilkan di sana tidak termasuk yang dihapus). Namun dokumen itu sendiri diketahui belum mengikuti perubahan Phase 10 (`employeeId` wajib) dan Phase 11 (kategori servis Haircut/Shaving/dll menggantikan `service` tunggal) — **pending**, bukan bagian dari audit modul Customer ini.
+- **Migrasi data customer lama** — sudah diputuskan final (tidak ada migrasi, §0), bukan item pending.

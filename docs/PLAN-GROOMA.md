@@ -506,6 +506,71 @@ Independen dari Phase 2/4/5/6 — hanya butuh Phase 1 (auth) dan, untuk reuse `l
 
 ---
 
+### Phase 13 — Get All Employees untuk AGENT (Dropdown Transaksi) ✅
+
+> **Status (dieksekusi 2026-11-10): kode penuh.** Seluruh checklist di bawah selesai dalam satu sesi. `tsc --noEmit` bersih (tidak ada error baru), `biome check` bersih di seluruh 9 file yang disentuh, `vitest run` → 19/19 test baru lulus, 0 regresi pada baseline sebelumnya (kegagalan yang ada di `.claude/worktrees/next-upgrade-16.4.5/` adalah pre-existing unrelated ke Phase ini).
+
+> **Konteks:** AGENT wajib memilih `employeeId` saat membuat transaksi (§5.5, §8.3, Phase 10). Selama ini tidak ada endpoint yang bisa diakses AGENT untuk mendapatkan daftar `Employee` di cabangnya sebagai opsi dropdown — `GET /users` hanya untuk HOST. Phase ini membangun endpoint khusus `GET /api/v1/employees` yang memenuhi kebutuhan ini tanpa membuka akses User Management ke AGENT. Lihat PRD §7.3a untuk spesifikasi lengkapnya.
+
+**Dependensi:** Phase 1 (auth/authorization), Phase 10 (`models/Employee.ts` live & ter-seed), Phase 9 (pagination contract).
+
+**Models:** tidak ada model baru — `models/Employee.ts` sudah ada (§5.13, Phase 10).
+
+**Services:**
+- [x] `services/employeeService.ts` — fungsi `listEmployees(query, user)`:
+  - Filter wajib `employmentStatus: ACTIVE` (tidak dapat diubah client).
+  - Jika `user.role === "AGENT"`: paksa `branchId = user.branch`; `branchId` dari query param **diabaikan secara senyap** (bukan error).
+  - Jika `user.role === "HOST"`: gunakan `branchId` dari query param bila dikirim, tampilkan semua cabang bila tidak.
+  - Gunakan `lib/pagination.ts` (`paginateQueries`, `paginationSkip`, `stableSort`) — konsisten dengan seluruh endpoint list lain (Phase 9).
+  - Serialisasi response: hanya `_id`, `name` (dari `User` yang ter-populate), `branch` (`_id` + `name` saja), `employmentStatus`. Field `compensation.*`, `joinedAt`, `resignedAt` **tidak pernah disertakan**.
+  - Implementasi: `populate("user", "name")` + `populate("branch", "name")` + `.select("_id user branch employmentStatus")` — drop sensitif field di query, bukan di serializer, sehingga Mongoose tidak pernah membawa data yang tidak dibutuhkan ke memori.
+
+**Validations:**
+- [x] `validations/employeeSchema.ts` — `listEmployeesQuerySchema`: `branchId` (optional string), spread `paginationQueryFields` dari `lib/pagination.ts`. Tidak `.strict()` — konsisten dengan seluruh list-query schema lain (query string legitimately membawa unowned params).
+
+**API:**
+- [x] `GET /api/v1/employees` — HOST + AGENT, branch-scoped untuk AGENT. Urutan middleware: `requireAuth` (dengan `subscriptionPolicy: "EXEMPT_AGENT"`) → `requireRole(["HOST", "AGENT"])` → validasi query → `listEmployees`.
+
+**Authorization detail (PRD §7.3a):**
+- [x] AGENT yang mengirim `branchId` cabang lain tidak mendapat error — `branchId` cukup diabaikan, branch session dipakai.
+- [x] HOST tanpa `branchId` mendapat employee semua cabang; dengan `branchId` mendapat employee satu cabang.
+
+**Subscription enforcement:**
+- [x] `subscriptionPolicy: "EXEMPT_AGENT"` sudah diterapkan langsung di route handler — AGENT selalu lolos tanpa query ke DB (hot path kasir bebas overhead). HOST tetap `ENFORCED` pada endpoint yang sama secara otomatis.
+
+**Scalar docs:**
+- [x] `app/scalar/docs/paths/employees.ts` — endpoint baru: query params (`branchId`, `page`, `limit`), response shape (array `employees` + `pagination`), perbedaan behavior HOST vs AGENT terdokumentasi di description.
+- [x] `app/scalar/docs/_schemas.ts` — tambah schema `EmployeeListItem` (`_id`, `name`, `branch`, `employmentStatus`; `employmentStatus` selalu `ACTIVE` di endpoint ini).
+- [x] `app/scalar/docs/_config.ts` — tambah tag `Employees`.
+- [x] `app/scalar/docs/route.ts` — import `employeePaths` dan spread ke `paths`.
+
+**Tests:**
+- [x] `validations/employeeSchema.test.ts` — 9 test: defaults, branchId, coerce string→int, batas `page`/`limit`, boundary `limit=100`, unknown params dilewatkan (tidak strict).
+- [x] `services/employeeService.test.ts` — 10 test:
+  - AGENT: `branchId` query diabaikan, branch session selalu dipakai.
+  - AGENT: hanya `employmentStatus: ACTIVE` yang dikembalikan.
+  - AGENT: field sensitif tidak ada di response.
+  - AGENT: pagination meta benar.
+  - HOST tanpa `branchId`: tidak ada branch filter (semua cabang).
+  - HOST dengan `branchId`: difilter ke cabang tersebut.
+  - HOST: `employmentStatus: ACTIVE` juga selalu diterapkan.
+  - HOST: multi-employee dikembalikan dengan benar.
+  - Edge case: `branch: null` ditangani tanpa crash.
+  - Edge case: `user: null` (name fallback ke empty string) ditangani tanpa crash.
+
+**Koordinasi klien mobile:**
+- [ ] `docs/integration-to-mobile-flutter/EMPLOYEE-MOBILE-API-INTEGRATION.md` — **sengaja belum disentuh.** Pola yang sama dengan Phase 9/10/11/12 — koordinasi build Flutter dilakukan di tahap terpisah.
+
+**Catatan implementasi yang dikonfirmasi saat eksekusi:**
+- `name` di-populate dari `User` via `.populate("user", "name")` — join satu hop, cukup untuk skenario barbershop. Denormalisasi ke `Employee` tidak dipilih karena overhead maintain konsistensi lebih besar dari manfaatnya di volume data ini.
+- Filter `name` (search) tidak diimplementasikan — barbershop dengan pegawai sedikit tidak membutuhkannya; bisa ditambah sebagai query param opsional nanti tanpa breaking change.
+
+**Verifikasi (dijalankan 2026-11-10):** `vitest run` → 19/19 test Phase 13 lulus (nol regresi di luar worktree pre-existing). `biome check` bersih di 9 file. `tsc --noEmit` bersih — tidak ada error baru.
+
+**Exit criteria:** seluruh checklist selesai **kecuali satu item koordinasi mobile yang sengaja ditunda** (pola konsisten dengan Phase 9/10/11/12). Backend Phase 13 selesai sepenuhnya.
+
+---
+
 ## 5. Definition of Done — Master Checklist
 
 Salinan tracker dari PRD §21, centang di akhir setiap fase yang relevan:
@@ -527,6 +592,7 @@ Salinan tracker dari PRD §21, centang di akhir setiap fase yang relevan:
 - [x] Dokumentasi API dan konfigurasi environment tersedia
 - [x] HOST membayar subscription bulanan sesuai plan aktif melalui QRIS, status subscription-nya tidak memengaruhi akses AGENT/operasional POS
 - [x] `GROOMA_ADMIN` dapat mengatur harga plan dan memantau/override status subscription seluruh HOST lewat namespace admin yang terisolasi
+- [x] AGENT dapat mengambil daftar Employee di cabangnya (hanya `ACTIVE`) sebagai opsi dropdown saat membuat transaksi (`GET /api/v1/employees`, branch-scoped, field sensitif tidak terekspos)
 
 ---
 
@@ -539,6 +605,7 @@ Phase 0 (Alignment)
           ├── Phase 2 (Master Data, termasuk Service hari ini)
           │      ├── Phase 3 (POS & Payments) ── Phase 5 (Approval, butuh Transaction)
           │      │      └── Phase 10 (Transaction.employee, butuh Employee scaffold) ⏳
+          │      │             └── Phase 13 (GET /employees untuk AGENT dropdown) ✅
           │      └── Phase 4 (Inventory)
           │
           └── Phase 8 (Subscription & Billing, reuse lib/midtrans.ts dari Phase 3)
@@ -554,6 +621,8 @@ Phase 9 bersifat lintas-modul: ia menyentuh endpoint milik Phase 2, 3, 4, 5, 6, 
 Phase 11 butuh Phase 2 (tempat `Service` didefinisikan) **dan** Phase 3 (tempat `Transaction.service` dipakai) karena migrasinya menyentuh keduanya. Lebih berisiko dari Phase 10: Phase 10 menambah field baru tanpa menyentuh field lama, sementara Phase 11 berakhir dengan menghapus sebuah model yang sudah dipakai lima service/route berbeda — **risiko itu sudah terealisasi dan selesai dieksekusi 2026-11-08**, lihat checklist Phase 11 di atas. Dikerjakan setelah Phase 10 pada file yang sama (`services/transactionService.ts`, `validations/transactionSchema.ts`) tanpa konflik merge, karena keduanya sudah ada di working tree yang sama saat Phase 11 dieksekusi.
 
 Phase 10 hanya bergantung pada Phase 3 (field yang diubah ada di `Transaction`) dan keberadaan scaffold `models/Employee.ts` (sudah ada sejak 2026-10-15). Independen dari Phase 9 — keduanya bisa berjalan paralel.
+
+Phase 13 bergantung pada Phase 10 (`models/Employee.ts` live & ter-seed, `Transaction.employee` wajib) dan Phase 9 (pagination contract & helpers). Independen dari Phase 11/12 — tidak menyentuh Transaction creation flow, hanya endpoint list baru. Dapat dikerjakan paralel dengan koordinasi mobile Phase 11/12 yang masih open.
 
 Phase 3 dan Phase 4 bisa dikerjakan paralel (sama-sama hanya bergantung pada Phase 1+2). Phase 6 menunggu data nyata dari Phase 3–5 agar aggregation tidak dites dengan data kosong/palsu.
 

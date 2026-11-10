@@ -52,6 +52,11 @@ export const tags = [
   { name: "Profile", description: "Own-profile read/update (HOST/AGENT)" },
   { name: "Branches", description: "Branch management (HOST only)" },
   { name: "Users", description: "Staff account management (HOST only)" },
+  {
+    name: "Employees",
+    description:
+      "Employee listing for transaction dropdown (HOST/AGENT, branch-scoped)",
+  },
   { name: "Customers", description: "Customer records (HOST/AGENT)" },
   { name: "Haircuts", description: "Haircut category catalog" },
   { name: "Shavings", description: "Shaving category catalog" },

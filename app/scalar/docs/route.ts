@@ -1,4 +1,3 @@
-// @/app/scalar/docs/route.ts
 import { ApiReference } from "@scalar/nextjs-api-reference";
 import { notFound } from "next/navigation";
 import type { NextRequest } from "next/server";
@@ -10,6 +9,7 @@ import { chemicalPaths } from "./paths/chemicals";
 import { colouringPaths } from "./paths/colourings";
 import { customerPaths } from "./paths/customers";
 import { dashboardPaths } from "./paths/dashboard";
+import { employeePaths } from "./paths/employees";
 import { haircutPaths } from "./paths/haircuts";
 import { internalPaths } from "./paths/internal";
 import { inventoryPaths } from "./paths/inventory";
@@ -36,6 +36,7 @@ const specHandler = ApiReference({
       ...profilePaths,
       ...branchPaths,
       ...userPaths,
+      ...employeePaths,
       ...customerPaths,
       ...haircutPaths,
       ...shavingPaths,

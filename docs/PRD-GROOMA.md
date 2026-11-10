@@ -121,6 +121,7 @@ Field `address`, `photoUrl`, dan `compensation` **sudah dihapus** dari model ini
 - Dapat melihat, menambahkan, dan memperbarui data customer (tidak dapat mengubah status aktif/nonaktif customer — itu wewenang HOST).
 - Dapat melakukan CRUD inventaris cabangnya.
 - Dapat melihat profil dan dashboard.
+- Dapat mengambil daftar Employee di cabangnya (hanya yang `employmentStatus: ACTIVE`) sebagai opsi dropdown saat membuat transaksi — lihat §7.3a.
 
 `GROOMA_ADMIN` — *diimplementasikan di backend admin terpisah, bukan di backend operasional (§3.6)*
 - Tidak terasosiasi dengan cabang manapun (`branch` selalu `null`).
@@ -152,6 +153,7 @@ Kolom `GROOMA ADMIN` menjelaskan role tersebut **di backend admin terpisah** (§
 | Update own profile | Yes | Yes | Own profile only, lewat backend admin |
 | Manage branches | Yes | No | No |
 | Manage users/employees | Yes | No | No |
+| View employees (dropdown) | Yes (all branches) | Yes (assigned branch only, ACTIVE only) | No |
 | Manage services | Yes | No | No |
 | Manage customers | Yes | Yes (kecuali nonaktifkan status) | No |
 | Attendance | Deferred | Deferred | Deferred |
@@ -916,6 +918,79 @@ HOST dapat membuat akun AGENT dan HOST sesuai kebijakan administrasi.
 
 Pembuatan akun tidak boleh mengekspos password hash.
 
+## 7.3a. Employee Listing (untuk Dropdown Transaksi)
+
+> **Konteks:** AGENT membutuhkan daftar employee di cabangnya sebagai opsi dropdown saat membuat transaksi (`employeeId`, §8.3). Endpoint User Management (`GET /users`) hanya dapat diakses HOST — AGENT tidak bisa menggunakannya. Endpoint khusus ini memisahkan kebutuhan operasional AGENT dari manajemen akun HOST.
+
+| Method | Endpoint | Access | Description |
+|---|---|---|---|
+| GET | `/employees` | HOST, AGENT | List employees yang dapat dipilih saat membuat transaksi |
+
+### Authorization
+
+- **HOST**: melihat semua `Employee` di semua cabang; dapat menggunakan query param `branchId` untuk memfilter.
+- **AGENT**: hanya melihat `Employee` di cabangnya sendiri (`Employee.branch == user.branch`); `branchId` dari query param **diabaikan** — backend selalu memaksa ke `user.branch`.
+
+### Query Parameters
+
+| Parameter | Tipe | Keterangan |
+|---|---|---|
+| `branchId` | ObjectId (string) | HOST only — filter berdasarkan cabang. AGENT: diabaikan. |
+| `page` | integer ≥ 1 | Default `1`, mengikuti kontrak pagination `docs/PAGINATION-CONTRACT.md`. |
+| `limit` | integer 1–100 | Default `20`. |
+
+### Response Shape
+
+```json
+{
+  "success": true,
+  "data": {
+    "employees": [
+      {
+        "_id": "employee_object_id",
+        "name": "Budi Santoso",
+        "branch": {
+          "_id": "branch_object_id",
+          "name": "Grooma Central"
+        },
+        "employmentStatus": "ACTIVE"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 5,
+      "totalPages": 1
+    }
+  }
+}
+```
+
+Field yang dikembalikan dibatasi hanya yang dibutuhkan untuk dropdown: `_id`, `name`, `branch` (id + name saja), dan `employmentStatus`. Data sensitif kepegawaian (`compensation.*`, `joinedAt`, `resignedAt`) **tidak pernah disertakan** pada response endpoint ini.
+
+### Filtering Default
+
+- Hanya `Employee` dengan `employmentStatus: ACTIVE` yang dikembalikan secara default. Employee yang sudah `RESIGNED` atau `SUSPENDED` tidak muncul — AGENT tidak boleh memilih mereka sebagai penerima `employeeRevenue` pada transaksi baru (§5.5).
+- Filter ini diterapkan di backend, tidak dapat di-override oleh client.
+
+### Rules
+
+- AGENT tidak dapat mengakses employee di cabang lain walau `branchId` dikirim eksplisit.
+- Response tidak memuat field akun User (`username`, `password`, `role`, `status`) — ini bukan endpoint User Management.
+- Endpoint ini **tidak** dapat digunakan untuk melihat detail lengkap satu Employee — tidak ada sub-route `GET /employees/:id` untuk AGENT. Jika dibutuhkan detail (mis. untuk HOST), itu termasuk fungsi manajemen yang berbeda.
+- Pagination wajib mengikuti kontrak di `docs/PAGINATION-CONTRACT.md`.
+
+### Acceptance Criteria
+
+1. AGENT yang login dapat memanggil `GET /employees` dan menerima daftar Employee yang `employmentStatus: ACTIVE` di cabangnya.
+2. AGENT yang mengirim `branchId` cabang lain tetap hanya mendapat employee cabangnya sendiri — `branchId` diabaikan secara senyap (bukan error).
+3. HOST dapat memanggil `GET /employees` tanpa `branchId` (mendapat semua cabang) dan dengan `branchId` (difilter ke satu cabang).
+4. Employee `RESIGNED`/`SUSPENDED` tidak muncul pada response untuk AGENT maupun HOST.
+5. Response selalu memiliki struktur `data.employees` (array) dan `data.pagination` yang valid.
+6. Field sensitif (`compensation.*`, `joinedAt`, `resignedAt`, `user.password`) tidak pernah ada pada response.
+7. Request tanpa session yang valid mengembalikan `401`.
+8. `page`/`limit` di luar rentang yang diizinkan mengembalikan `400`.
+
 ## 7.4. Branch Management
 
 | Method | Endpoint | Access | Description |
@@ -1559,6 +1634,7 @@ Struktur ini merupakan rekomendasi awal. Hindari membuat abstraksi berlebihan se
 - AGENT tidak dapat mengelola cabang.
 - AGENT tidak dapat mengakses inventaris cabang lain.
 - AGENT tidak dapat menyetujui pengajuan perubahan.
+- AGENT tidak dapat melihat employee di luar cabangnya.
 - HOST tidak dapat membuat transaksi.
 - HOST dapat melihat transaksi lintas cabang.
 - Manipulasi `branchId` dari client tidak melewati otorisasi.
@@ -1602,6 +1678,14 @@ Struktur ini merupakan rekomendasi awal. Hindari membuat abstraksi berlebihan se
 - Filter cabang mengikuti role.
 - Pembayaran pending tidak dihitung sebagai omzet yang sudah diterima.
 - Refund diperhitungkan secara konsisten.
+
+## Employee Listing (Dropdown)
+- AGENT hanya dapat melihat employee di cabangnya sendiri.
+- `branchId` yang dikirim AGENT diabaikan — employee yang dikembalikan selalu dari cabang session user.
+- HOST tanpa `branchId` mendapat employee dari semua cabang; dengan `branchId` mendapat employee cabang tersebut saja.
+- Employee `RESIGNED` dan `SUSPENDED` tidak muncul pada response.
+- Field sensitif (`compensation.*`, `joinedAt`, `resignedAt`) tidak pernah ada di response.
+- Request tanpa session mengembalikan `401`.
 
 ---
 
@@ -1778,6 +1862,7 @@ Ketika `Subscription.status` milik HOST bernilai `PAST_DUE`/`EXPIRED`/`CANCELLED
 | GET, POST | `/api/v1/customers` |
 | GET, PATCH | `/api/v1/customers/{id}` |
 | GET | `/api/v1/haircuts`, `/shavings`, `/treatments`, `/colourings`, `/chemicals` (dan `/{id}` masing-masing) |
+| GET | `/api/v1/employees` |
 | POST | `/api/v1/transactions` |
 | GET | `/api/v1/transactions`, `/api/v1/transactions/{id}` |
 | POST | `/api/v1/transactions/{id}/complete` |

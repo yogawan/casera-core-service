@@ -1,6 +1,8 @@
 # Integrasi Mobile (Flutter) — Grooma API — Modul Transaction Change Requests (Approval Workflow)
 
-> Dokumen ini khusus alur **pengajuan & approval koreksi transaksi** (ganti service/customer/diskon/jam pada transaksi yang **sudah dibuat**). Base URL, model sesi cookie, dan setup `dio` **tidak diulang di sini** — lihat `docs/AUTH-MOBILE-API-INTEGRATION.md` bagian 1–2. Untuk create/list/detail/complete/cancel/receipt transaksi itu sendiri, lihat `docs/TRANSACTION-MOBILE-API-INTEGRATION.md`.
+> Dokumen ini khusus alur **pengajuan & approval koreksi transaksi** (ganti kategori servis/customer/diskon/jam pada transaksi yang **sudah dibuat**). Base URL, model sesi cookie, dan setup `dio` **tidak diulang di sini** — lihat `docs/AUTH-MOBILE-API-INTEGRATION.md` bagian 1–2. Untuk create/list/detail/complete/cancel/receipt transaksi itu sendiri, lihat `docs/TRANSACTION-MOBILE-API-INTEGRATION.md`.
+
+> **Diperbarui penuh berdasarkan audit langsung ke kode** (`validations/approvalSchema.ts`, `services/approvalService.ts`, dan seluruh route `app/api/v1/{transactions/:id/change-requests,transaction-change-requests}/**`) — bukan disalin dari versi dokumen sebelumnya. Versi lama ditulis **sebelum** Phase 11 (Service → 5 kategori), jadi whitelist dan contoh request/response-nya berubah.
 
 ---
 
@@ -11,7 +13,13 @@
 - `transaction.changeRequest` — status pengajuan **terkini/terakhir** (`NONE`/`PENDING`/`APPROVED`/`REJECTED`) beserta siapa yang minta, alasan, apa yang diminta, siapa yang review, dst. Field ini **ditimpa penuh** setiap ada pengajuan baru — riwayat pengajuan lama yang sudah diputuskan tidak disimpan di sini.
 - `transaction.changeHistory[]` — log permanen **append-only**, isinya cuma perubahan yang **benar-benar diterapkan** (yang di-APPROVE). Pengajuan yang di-REJECT tidak pernah masuk ke sini.
 
-**Konsekuensi langsung ke URL:** parameter `:id` di **semua** endpoint `/transaction-change-requests/:id*` di bawah **adalah `_id` milik `Transaction`**, bukan id entity lain. Dan **response dari kelima endpoint di modul ini selalu `{ transaction: {...} }`** (bentuk Transaction penuh seperti di dokumen POS core), tidak pernah ada object `changeRequest` berdiri sendiri yang dikembalikan terpisah.
+**Konsekuensi langsung ke URL:** parameter `:id` di **semua** endpoint `/transaction-change-requests/:id*` di bawah **adalah `_id` milik `Transaction`**, bukan id entity lain. Dan **response dari kelima endpoint di modul ini selalu `{ transaction: {...} }`**, tidak pernah ada object `changeRequest` berdiri sendiri yang dikembalikan terpisah.
+
+### 0.1. ⚠️ Breaking Change — `serviceId` Diganti 5 Field Kategori, dan `employeeId` TIDAK Bisa Dikoreksi Lewat Sini (PRD §5.14)
+
+Sama seperti alur create (`TRANSACTION-MOBILE-API-INTEGRATION.md` §2), `requestedChanges.serviceId` **sudah tidak ada** — diganti lima field opsional: `haircutId`, `shavingId`, `treatmentId`, `colouringId`, `chemicalId`. Detail lengkapnya di §2.
+
+**Dikonfirmasi langsung dari `validations/approvalSchema.ts`: `employeeId` TIDAK ADA di whitelist `requestedChanges` sama sekali.** Kalau AGENT salah pilih employee saat create transaksi (lihat blocker terpisah di `TRANSACTION-MOBILE-API-INTEGRATION.md` §0), **tidak ada cara memperbaikinya** — bukan cuma lewat modul ini, tapi lewat API manapun. Satu-satunya field referensi yang bisa dikoreksi tetap seperti sebelumnya: kategori servis (sekarang 5, bukan 1) dan customer.
 
 ---
 
@@ -21,11 +29,11 @@
 |---|---|---|---|
 | POST | `/api/v1/transactions/:id/change-requests` | HOST, AGENT (cabang sendiri) | Ajukan koreksi |
 | GET | `/api/v1/transaction-change-requests` | **HOST only** | List semua yang `PENDING`, lintas cabang |
-| GET | `/api/v1/transaction-change-requests/:id` | HOST, atau **AGENT yang mengajukan sendiri** | Lihat status satu pengajuan |
+| GET | `/api/v1/transaction-change-requests/:id` | HOST, atau **AGENT yang mengajukan sendiri** | Lihat status satu pengajuan. **Tidak ada `requireRole` di route ini** — akses ditentukan penuh dari data di dalam service (§4) |
 | POST | `/api/v1/transaction-change-requests/:id/approve` | **HOST only** | Tidak bisa approve pengajuan sendiri |
 | POST | `/api/v1/transaction-change-requests/:id/reject` | **HOST only** | `reviewNote` wajib |
 
-⚠️ **Subscription gating modul ini `ENFORCED` penuh** — beda dari dokumen POS core (`EXEMPT_AGENT`). Kalau subscription HOST nunggak (`PAST_DUE`/`EXPIRED`/`CANCELLED`), **AGENT JUGA kena `402`** di kelima endpoint ini, tidak dikecualikan seperti create/list/complete transaksi. PRD §23.4.1 sengaja mengunci modul ini untuk kedua role karena mengajukan/approve koreksi bukan bagian dari "menyelesaikan customer yang sedang di kursi".
+⚠️ **Subscription gating modul ini `ENFORCED` penuh di kelima endpoint** (diverifikasi langsung — tidak satu pun dari 5 route handler mengirim `subscriptionPolicy` override, jadi default `ENFORCED` berlaku semuanya) — beda dari dokumen POS core (`EXEMPT_AGENT`). Kalau subscription HOST nunggak, **AGENT JUGA kena `402`** di kelima endpoint ini. PRD §23.4.1 sengaja mengunci modul ini untuk kedua role karena mengajukan/approve koreksi bukan bagian dari "menyelesaikan customer yang sedang di kursi" — konsisten dengan allowlist §23.4.1 yang eksplisit mengecualikan `/transactions/{id}/change-requests` dari daftar yang tetap terbuka untuk AGENT.
 
 ---
 
@@ -37,9 +45,9 @@
 
 ```json
 {
-  "reason": "Customer sebenarnya minta layanan Haircut + Beard Trim, salah input service",
+  "reason": "Customer sebenarnya minta Haircut + Beard Trim, salah input kategori",
   "requestedChanges": {
-    "serviceId": "66bb22cc33dd44ee55ff6611",
+    "haircutId": "66bb22cc33dd44ee55ff6611",
     "discountAmount": 10000
   }
 }
@@ -49,12 +57,18 @@
 |---|---|---|---|
 | `reason` | `string` | **Ya** | 1–1000 karakter |
 | `requestedChanges` | `object` | **Ya** | **Minimal 1 key** harus diisi |
-| `requestedChanges.serviceId` | `string` | Tidak | |
+| `requestedChanges.haircutId` | `string` | Tidak | |
+| `requestedChanges.shavingId` | `string` | Tidak | |
+| `requestedChanges.treatmentId` | `string` | Tidak | |
+| `requestedChanges.colouringId` | `string` | Tidak | |
+| `requestedChanges.chemicalId` | `string` | Tidak | |
 | `requestedChanges.customerId` | `string \| null` | Tidak | `null` valid — buat mengoreksi "transaksi ini seharusnya tanpa customer" atau sebaliknya |
 | `requestedChanges.discountAmount` | `number` | Tidak | |
 | `requestedChanges.serviceHourType` | `"REGULAR" \| "OVERTIME"` | Tidak | |
 
-**Hanya 4 field di atas yang bisa diajukan.** `paymentMethod`, status, `branch`, `agent` **tidak bisa** dikoreksi lewat jalur ini sama sekali (schema `.strict()` menolak field lain dengan 400) — itu masing-masing punya mekanismenya sendiri (ganti metode bayar tidak ada endpoint-nya; status pakai complete/cancel; branch/agent permanen sejak transaksi dibuat).
+**Hanya 8 field di atas yang bisa diajukan** (schema `.strict()` menolak field lain dengan `400`, termasuk `employeeId` — lihat §0.1). `paymentMethod`, status, `branch`, `agent` **tidak bisa** dikoreksi lewat jalur ini sama sekali — masing-masing punya mekanismenya sendiri.
+
+**Mengirim satu id kategori berarti mengubah/menetapkan kategori itu secara spesifik** — keempat kategori lain (kalau ada) **tidak tersentuh**, tetap seperti semula. Tidak ada mekanisme "kosongkan kategori yang sudah ada" lewat change request (sama seperti `serviceId` dulu tidak pernah mendukung "transaksi tanpa service").
 
 ### Response `201 Created`
 
@@ -69,8 +83,8 @@
       "changeRequest": {
         "status": "PENDING",
         "requestedBy": "66ab12cd34ef56ab78cd90aa",
-        "reason": "Customer sebenarnya minta layanan Haircut + Beard Trim, salah input service",
-        "requestedChanges": { "serviceId": "66bb22cc33dd44ee55ff6611", "discountAmount": 10000 },
+        "reason": "Customer sebenarnya minta Haircut + Beard Trim, salah input kategori",
+        "requestedChanges": { "haircutId": "66bb22cc33dd44ee55ff6611", "discountAmount": 10000 },
         "requestedAt": "2026-10-18T09:00:00.000Z"
       }
     }
@@ -78,28 +92,28 @@
 }
 ```
 
-Perhatikan: **field transaksi utama (`total`, `serviceSnapshot`, dst.) belum berubah sama sekali** di titik ini — pengajuan hanya "dicatat niatnya", efeknya baru benar-benar diterapkan kalau HOST approve (§5).
+Perhatikan: **field transaksi utama (`total`, `*Snapshot`, dst.) belum berubah sama sekali** di titik ini — pengajuan hanya "dicatat niatnya", efeknya baru benar-benar diterapkan kalau HOST approve (§5).
 
 ### Status Code
 
 | Status | `error.code` | Kapan |
 |---|---|---|
 | `201` | — | Pengajuan tersimpan |
-| `400` | `VALIDATION_ERROR` | `reason` kosong, `requestedChanges` kosong/semua field tidak diisi, atau ada field di luar whitelist |
+| `400` | `VALIDATION_ERROR` | `reason` kosong, `requestedChanges` kosong/semua field tidak diisi, atau ada field di luar whitelist (termasuk `employeeId`/`serviceId` lama) |
 | `401` | `UNAUTHENTICATED` | |
 | `402` | `PAYMENT_REQUIRED` | Subscription HOST lapsed — **berlaku untuk AGENT juga** (lihat §1) |
 | `403` | `FORBIDDEN` | AGENT dari cabang lain |
 | `404` | `NOT_FOUND` | Transaksi tidak ditemukan |
 | `409` | `CONFLICT` | Transaksi sudah `CANCELLED`, **atau sudah ada pengajuan `PENDING` lain yang masih aktif** (hanya 1 pengajuan aktif per transaksi) |
-| `422` | `BUSINESS_RULE_VIOLATION` | `serviceId`/`customerId` yang diajukan tidak ada/tidak aktif |
+| `422` | `BUSINESS_RULE_VIOLATION` | Kategori/customer yang diajukan tidak ditemukan — pesan per kategori sama seperti create (`"Requested haircut is not available."`, dst., lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §2) |
 
-Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" pengajuan yang sudah ada — harus menunggu HOST approve/reject dulu (§4/§5), baru bisa ajukan lagi dengan data yang benar.
+Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" pengajuan yang sudah ada — harus menunggu HOST approve/reject dulu (§5/§6), baru bisa ajukan lagi.
 
 ---
 
 ## 3. GET /api/v1/transaction-change-requests — Antrian Approval (HOST)
 
-**HOST only** (403 untuk AGENT — ini endpoint "kotak masuk approval" milik HOST, bukan untuk AGENT).
+**HOST only** (403 untuk AGENT).
 
 ### Query Params
 
@@ -108,13 +122,9 @@ Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" 
 | `page` | `1` | |
 | `limit` | `20`, maks `100` | |
 
-⚠️ **Tidak ada filter `branchId` di endpoint ini** — HOST dengan banyak cabang melihat **seluruh** pengajuan `PENDING` lintas cabang dalam satu list tanpa bisa difilter per cabang dari query. Kalau butuh grouping per cabang di UI, lakukan di sisi client dari field `transaction.branch` pada tiap item.
+⚠️ **Tidak ada filter `branchId`** — HOST dengan banyak cabang melihat **seluruh** pengajuan `PENDING` lintas cabang dalam satu list. Kalau butuh grouping per cabang di UI, lakukan di sisi client dari field `transaction.branch` pada tiap item.
 
-> ⚠️ **Grouping per cabang di client × pagination:** pengelompokan itu hanya berlaku atas halaman yang sudah di-fetch, jadi header grup bisa muncul berulang saat halaman berikutnya datang. Untuk antrian approval yang biasanya pendek, cara paling sederhana: kirim `limit=100` sekali, dan baru tangani paging kalau `totalPages > 1`.
-
-> **Kontrak pagination endpoint ini tidak berubah** pada pembaruan 2026-10-19 — sudah sesuai standar sejak awal. Acuan lengkapnya di `AUTH-MOBILE-API-INTEGRATION.md` §2.1. Yang berubah: urutannya sekarang **stabil** (`changeRequest.requestedAt` desc + tie-breaker `_id`).
->
-> Khusus endpoint ini ada satu hal yang perlu diperhatikan soal paging: **isi list berubah saat HOST bekerja.** Setiap approve/reject mengeluarkan satu baris dari antrian `PENDING`, sehingga `total` mengecil dan baris bergeser maju. Kalau HOST sedang di halaman 2 lalu menyetujui beberapa pengajuan, halaman 2 bisa jadi kosong. **Refetch dari halaman 1 setelah setiap aksi approve/reject**, jangan mempertahankan posisi halaman.
+> ⚠️ **Isi list berubah saat HOST bekerja.** Setiap approve/reject mengeluarkan satu baris dari antrian `PENDING`. **Refetch dari halaman 1 setelah setiap aksi approve/reject**, jangan mempertahankan posisi halaman.
 
 ### Response `200 OK`
 
@@ -131,8 +141,8 @@ Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" 
         "changeRequest": {
           "status": "PENDING",
           "requestedBy": { "_id": "66ab12cd34ef56ab78cd90aa", "name": "Budi Santoso" },
-          "reason": "Customer sebenarnya minta layanan Haircut + Beard Trim, salah input service",
-          "requestedChanges": { "serviceId": "66bb22cc33dd44ee55ff6611", "discountAmount": 10000 },
+          "reason": "Customer sebenarnya minta Haircut + Beard Trim, salah input kategori",
+          "requestedChanges": { "haircutId": "66bb22cc33dd44ee55ff6611", "discountAmount": 10000 },
           "requestedAt": "2026-10-18T09:00:00.000Z"
         }
       }
@@ -142,15 +152,17 @@ Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" 
 }
 ```
 
-⚠️ **Key array-nya `transactions`, bukan `changeRequests`** — konsisten dengan prinsip di §0 (yang dikembalikan selalu bentuk Transaction). Terurut dari pengajuan **terbaru** (`changeRequest.requestedAt` descending). Hanya pengajuan `PENDING` yang muncul di sini — yang sudah `APPROVED`/`REJECTED` tidak akan pernah tampil di list ini lagi (lihat §4 untuk cara melihat yang sudah diputuskan).
+⚠️ **Key array-nya `transactions`, bukan `changeRequests`.** Terurut dari pengajuan **terbaru** (`changeRequest.requestedAt` descending). Hanya pengajuan `PENDING` yang muncul di sini.
 
 ---
 
 ## 4. GET /api/v1/transaction-change-requests/:id — Detail Satu Pengajuan
 
-`:id` = id transaksi (§0). Endpoint ini bisa dipakai untuk pengajuan yang masih `PENDING` **maupun** yang sudah `APPROVED`/`REJECTED` (untuk AGENT mengecek "pengajuan saya diterima/ditolak belum").
+`:id` = id transaksi (§0). Endpoint ini bisa dipakai untuk pengajuan yang masih `PENDING` **maupun** yang sudah `APPROVED`/`REJECTED`.
 
-⚠️ **Aturan akses di sini BEDA dari pola "branch access" di endpoint lain** — bukan "HOST + AGENT cabang yang sama", tapi **"HOST + AGENT yang mengajukan pengajuan itu sendiri"**. AGENT lain di cabang yang sama yang BUKAN pengajunya akan tetap kena `403` walau satu cabang. Kalau app AGENT mau menampilkan "status pengajuan saya", simpan `transaction._id` dari response §2 saat submit, lalu panggil endpoint ini dengan id itu — jangan asumsikan semua AGENT di cabang bisa saling lihat status pengajuan satu sama lain.
+⚠️ **Tidak ada `requireRole` di route ini sama sekali** — berbeda dari keempat endpoint lain di modul ini yang semuanya punya gate role eksplisit. Aturan aksesnya **sepenuhnya data-dependent**, dicek di dalam `services/approvalService.ts#getChangeRequestById`: **"HOST (siapa pun) + AGENT yang mengajukan pengajuan itu sendiri"** — bukan pola "branch access" seperti endpoint lain. AGENT lain di cabang yang sama yang BUKAN pengajunya akan tetap kena `403` walau satu cabang.
+
+**Response-nya lebih lengkap populated dibanding §3** — selain `branch`/`agent`/`changeRequest.requestedBy`, endpoint ini juga mem-populate `changeRequest.reviewedBy` (siapa HOST yang sudah approve/reject), berguna kalau pengajuan sudah diputuskan.
 
 | Status | `error.code` | Kapan |
 |---|---|---|
@@ -158,7 +170,7 @@ Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" 
 | `401` | `UNAUTHENTICATED` | |
 | `402` | `PAYMENT_REQUIRED` | Termasuk untuk AGENT (lihat §1) |
 | `403` | `FORBIDDEN` | Bukan HOST dan bukan pengaju aslinya |
-| `404` | `NOT_FOUND` | Transaksi tidak ada, **atau transaksi ada tapi belum pernah punya pengajuan sama sekali** (`changeRequest.status === "NONE"`) — dua kasus ini dibalas pesan error yang sama, tidak bisa dibedakan dari response-nya |
+| `404` | `NOT_FOUND` | Transaksi tidak ada, **atau transaksi ada tapi belum pernah punya pengajuan sama sekali** (`changeRequest.status === "NONE"`) — dua kasus ini dibalas pesan error yang sama persis ("No change request exists for this transaction."), tidak bisa dibedakan dari response-nya |
 
 ---
 
@@ -168,7 +180,7 @@ Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" 
 
 ```json
 {
-  "reviewNote": "Dicek dengan customer, benar salah input service",
+  "reviewNote": "Dicek dengan customer, benar salah input kategori",
   "approvalReference": "WA-chat-2026-10-18"
 }
 ```
@@ -176,18 +188,19 @@ Kalau dapat `409` karena sudah ada pengajuan `PENDING`, tidak ada cara "update" 
 | Field | Tipe | Wajib | Catatan |
 |---|---|---|---|
 | `reviewNote` | `string` | Tidak | Maks 1000 karakter |
-| `approvalReference` | `string` | Tidak | Maks 255 karakter — referensi bebas (nomor tiket, link chat, dsb.) |
+| `approvalReference` | `string` | Tidak | Maks 255 karakter — referensi bebas |
 
 ### Apa yang Terjadi Saat Approve
 
-1. **Service/customer yang diajukan divalidasi ULANG** (bukan cuma mengandalkan validasi saat submit di §2) — kalau di antara waktu submit dan approve service/customer itu jadi tidak aktif/terhapus, approve akan gagal `422` meski submission-nya dulu sukses.
-2. Kalau yang diajukan menyangkut `serviceId`/`discountAmount`: `subtotal`/`total`/`ownerRevenue`/`employeeRevenue`/`serviceSnapshot` **dihitung ulang dari awal** (formula sama seperti saat create, lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §1) dan **benar-benar menggantikan** nilai lama di transaksi.
-3. Satu entry baru ditambahkan ke `transaction.changeHistory[]` (permanen, berisi snapshot `before`/`after`).
-4. `changeRequest.status` jadi `APPROVED`, tercatat `reviewedBy`/`reviewNote`/`reviewedAt`.
+1. **Kategori/customer yang diajukan divalidasi ULANG** (bukan cuma mengandalkan validasi saat submit di §2) — kalau di antara waktu submit dan approve kategori/customer itu hilang, approve akan gagal `422` meski submission-nya dulu sukses.
+2. ⚠️ **Nuansa penting yang mudah terlewat: kalau pengajuan menyangkut PERUBAHAN kategori apa pun (atau `discountAmount`), backend me-refetch SEMUA kategori yang akan terisi di hasil akhir — bukan cuma yang diubah.** Kategori yang **tidak** disebutkan di `requestedChanges` tapi **sudah ada** di transaksi tetap di-refetch LIVE dari database (bukan dari snapshot lama) untuk ikut dalam kalkulasi ulang. Konsekuensinya: kalau transaksi punya haircut + shaving, dan pengajuan hanya mengubah `discountAmount` (tidak menyebut kategori apa pun), approve tetap akan gagal `422` ("Transaction's current haircut/shaving is no longer available.") kalau salah satu dari haircut/shaving yang **sudah ada** itu kebetulan sudah terhapus di antara waktu transaksi dibuat dan sekarang.
+3. Formula kalkulasi ulang sama seperti saat create (satu kategori hasil akhir → formula lama; >1 kategori hasil akhir → formula gross-per-kategori) — lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §2 untuk detail formula dan konsekuensi `ownerRevenue+employeeRevenue` yang bisa tidak sama dengan `total`.
+4. Satu entry baru ditambahkan ke `transaction.changeHistory[]` (permanen, berisi snapshot `before`/`after` — hanya field yang benar-benar berubah yang masuk ke objek ini, bukan seluruh transaksi).
+5. `changeRequest.status` jadi `APPROVED`, tercatat `reviewedBy`/`reviewNote`/`reviewedAt`.
 
-Response `200`: `{transaction}` — sudah mencerminkan nilai BARU (bukan nilai sebelum approve).
+Response `200`: `{transaction}` — sudah mencerminkan nilai BARU.
 
-⚠️ **`pointsEarned` TIDAK ikut dihitung ulang saat approve, dan poin loyalty yang sudah dikreditkan ke customer TIDAK ikut disesuaikan**, meskipun `total` transaksinya berubah. Kalau transaksi itu sudah `PAID` sebelum di-approve (poinnya sudah masuk ke saldo customer berdasarkan `total` LAMA), approve yang mengubah harga tidak mengoreksi poin yang sudah terlanjur diberikan — ini gap yang ada di backend saat ini, bukan sesuatu yang perlu "ditunggu" di sisi app. Kalau ini penting untuk bisnis HOST, perlu proses manual terpisah atau follow-up ke tim backend, bukan sesuatu yang bisa diperbaiki dari sisi Flutter.
+⚠️ **`pointsEarned` TIDAK ikut dihitung ulang saat approve, dan poin loyalty yang sudah dikreditkan ke customer TIDAK ikut disesuaikan**, meskipun `total` transaksinya berubah — dikonfirmasi langsung dari kode, tidak ada satu baris pun di `approveChangeRequest` yang menyentuh `pointsEarned` atau memanggil fungsi credit/reverse poin. Kalau transaksi itu sudah `PAID` sebelum di-approve, approve yang mengubah harga tidak mengoreksi poin yang sudah terlanjur diberikan — ini gap di backend, bukan sesuatu yang bisa diperbaiki dari sisi Flutter.
 
 ### Status Code
 
@@ -195,12 +208,12 @@ Response `200`: `{transaction}` — sudah mencerminkan nilai BARU (bukan nilai s
 |---|---|---|
 | `200` | — | Disetujui & diterapkan |
 | `400` | `VALIDATION_ERROR` | `reviewNote`/`approvalReference` melebihi panjang maksimal |
-| `403` | `FORBIDDEN` | Bukan HOST, **atau HOST yang sama dengan pengaju mencoba approve pengajuannya sendiri** (pemisahan tugas — lihat PRD §10.2) |
+| `403` | `FORBIDDEN` | Bukan HOST, **atau HOST yang sama dengan pengaju mencoba approve pengajuannya sendiri** (pemisahan tugas — PRD §10.2, berlaku juga kalau HOST sendiri yang mengajukan) |
 | `404` | `NOT_FOUND` | Transaksi tidak ditemukan |
-| `409` | `CONFLICT` | Pengajuan sudah bukan `PENDING` lagi (sudah diputuskan sebelumnya) |
-| `422` | `BUSINESS_RULE_VIOLATION` | Service/customer yang diajukan sudah tidak tersedia **di saat approve ini** (lihat poin 1 di atas) |
+| `409` | `CONFLICT` | Pengajuan sudah bukan `PENDING` lagi |
+| `422` | `BUSINESS_RULE_VIOLATION` | Kategori/customer yang diajukan ATAU yang sudah ada di transaksi sudah tidak tersedia saat approve (lihat poin 2 di atas) |
 
-⚠️ **Kalau kena `422` di sini, pengajuan TETAP `PENDING`** — tidak otomatis gagal/ditolak. Karena hanya boleh ada 1 pengajuan `PENDING` aktif per transaksi (§2), AGENT tidak bisa mengajukan ulang dengan data yang benar sampai pengajuan ini diputuskan. Sediakan di UI HOST: kalau approve gagal `422`, tawarkan opsi **Reject** (§6) sebagai jalan keluar supaya AGENT bisa mengajukan ulang, karena tidak ada mekanisme "edit pengajuan yang sudah ada".
+⚠️ **Kalau kena `422` di sini, pengajuan TETAP `PENDING`** — tidak otomatis gagal/ditolak. Karena hanya boleh ada 1 pengajuan `PENDING` aktif per transaksi (§2), AGENT tidak bisa mengajukan ulang sampai pengajuan ini diputuskan. Sediakan di UI HOST: kalau approve gagal `422`, tawarkan opsi **Reject** (§6) sebagai jalan keluar.
 
 ---
 
@@ -209,16 +222,16 @@ Response `200`: `{transaction}` — sudah mencerminkan nilai BARU (bukan nilai s
 **HOST only.** Body:
 
 ```json
-{ "reviewNote": "Service yang diminta tidak tersedia di cabang ini" }
+{ "reviewNote": "Kategori yang diminta tidak tersedia di cabang ini" }
 ```
 
 | Field | Tipe | Wajib | Catatan |
 |---|---|---|---|
-| `reviewNote` | `string` | **Ya** | 1–1000 karakter — beda dari approve, di sini **wajib** diisi (alasan tolak harus tercatat) |
+| `reviewNote` | `string` | **Ya** | 1–1000 karakter — beda dari approve, di sini **wajib** diisi |
 
-Transaksi **tidak disentuh sama sekali** — hanya `changeRequest.status` jadi `REJECTED` + `reviewedBy`/`reviewNote`/`reviewedAt`. Tidak ada entry baru di `changeHistory` (karena memang tidak ada yang diterapkan).
+Transaksi **tidak disentuh sama sekali** — hanya `changeRequest.status` jadi `REJECTED` + `reviewedBy`/`reviewNote`/`reviewedAt`. Tidak ada entry baru di `changeHistory`.
 
-Setelah ditolak, `changeRequest.status` tidak lagi `PENDING` — AGENT **bisa langsung mengajukan pengajuan baru** pada transaksi yang sama (§2) tanpa terhalang status `REJECTED` sebelumnya.
+Setelah ditolak, AGENT **bisa langsung mengajukan pengajuan baru** pada transaksi yang sama (§2).
 
 | Status | `error.code` | Kapan |
 |---|---|---|
@@ -232,8 +245,15 @@ Setelah ditolak, `changeRequest.status` tidak lagi `PENDING` — AGENT **bisa la
 
 ## 7. Catatan Implementasi Flutter
 
-- **Jangan bangun model `ChangeRequest` dengan `id` sendiri** — semua state-nya adalah bagian dari model `Transaction` yang sudah ada (field `changeRequest` dan `changeHistory`). Reuse model Transaction dari `TRANSACTION-MOBILE-API-INTEGRATION.md`, jangan buat entity baru.
-- **Untuk layar "status pengajuan saya" (AGENT):** simpan `transaction._id` begitu submit (§2) sukses, lalu pakai id itu untuk polling/cek ulang via §4. Jangan desain layar "daftar pengajuan saya" dari `GET /transaction-change-requests` — endpoint itu `403` untuk AGENT.
-- **Untuk layar approval HOST:** `GET /transaction-change-requests` (§3) adalah satu-satunya sumber antrian, dan tidak bisa difilter per cabang dari server — kalau HOST punya banyak cabang dan mau grouping, lakukan di client.
-- **Tombol Approve di UI HOST harus siap menangani `422`** sebagai hasil yang valid (bukan cuma `400`/`500` generic) — lihat peringatan di §5 soal pengajuan yang tetap `PENDING` dan perlunya fallback ke Reject.
-- **402 di modul ini berlaku untuk AGENT juga** (§1) — beda dari dokumen POS core. Kalau app sudah punya state "terkunci karena subscription" untuk HOST, state yang sama harus berlaku untuk AGENT khusus di layar submit-pengajuan ini, meskipun AGENT itu bebas membuat transaksi baru seperti biasa.
+- **Hapus seluruh referensi `serviceId` di form pengajuan koreksi** — diganti `haircutId`/`shavingId`/`treatmentId`/`colouringId`/`chemicalId` (§2). UI-nya perlu mendukung memilih/ganti salah satu dari 5 kategori, bukan satu dropdown service tunggal.
+- **Jangan tambahkan opsi "koreksi employee" di UI** — `employeeId` tidak ada di whitelist (§0.1), dan tidak ada mekanisme lain untuk memperbaikinya. Kalau user butuh ini, itu pertanyaan untuk tim backend, bukan sesuatu yang bisa dibangun di Flutter hari ini.
+- **Jangan bangun model `ChangeRequest` dengan `id` sendiri** — semua state-nya adalah bagian dari model `Transaction`. Reuse model Transaction dari `TRANSACTION-MOBILE-API-INTEGRATION.md`.
+- **Untuk layar "status pengajuan saya" (AGENT):** simpan `transaction._id` begitu submit (§2) sukses, lalu pakai id itu untuk cek ulang via §4 (yang juga menampilkan `reviewedBy` kalau sudah diputuskan). Jangan desain layar "daftar pengajuan saya" dari `GET /transaction-change-requests` — endpoint itu `403` untuk AGENT.
+- **Tombol Approve di UI HOST harus siap menangani `422`** sebagai hasil yang valid — termasuk kasus di mana `422` dipicu oleh kategori yang **tidak** diajukan untuk diubah, tapi kebetulan sudah tidak tersedia lagi (§5 poin 2) — pesan errornya akan menyebut kategori spesifik yang bermasalah, tampilkan apa adanya ke HOST.
+- **402 di modul ini berlaku untuk AGENT juga** (§1) — beda dari dokumen POS core.
+
+---
+
+## 8. Pending / Belum Bisa Dipastikan dari Audit Ini
+
+Tidak ditemukan blocker untuk modul ini sendiri — kelima endpoint, whitelist, dan logic approve/reject diverifikasi langsung dari kode yang sudah berjalan (Phase 11 ✅). Satu limitasi struktural dicatat sebagai fakta (bukan blocker tersendiri, karena sudah konsisten di seluruh backend): `employeeId` tidak bisa dikoreksi lewat modul ini maupun modul lain (§0.1) — ini adalah konsekuensi langsung dari blocker yang sudah didokumentasikan di `TRANSACTION-MOBILE-API-INTEGRATION.md` §0 (tidak ada endpoint Employee sama sekali), bukan gap baru yang berdiri sendiri di modul approval ini.
