@@ -8,18 +8,74 @@
 
 ---
 
-## 0. ‼️🐛 BLOCKER — `employeeId` Wajib, Tapi Tidak Ada Endpoint untuk Mengambil Daftar Employee
+## 0. `employeeId` — Endpoint Daftar Employee (Phase 13 ✅)
 
-**Ini bukan nuansa dokumentasi — ini menghalangi implementasi layar "Buat Transaksi" sama sekali kalau tidak diselesaikan dulu.**
+> Bagian ini sebelumnya berisi **BLOCKER** karena tidak ada endpoint Employee. Blocker tersebut **sudah diselesaikan** di Phase 13 (diimplementasikan 2026-11-10). Endpoint `GET /api/v1/employees` sekarang tersedia dan harus menjadi sumber data untuk picker `employeeId` di layar buat transaksi.
 
-Sejak Phase 10 (PRD §5.5, §5.13), `POST /transactions` **mewajibkan** field `employeeId` — merujuk ke dokumen `Employee` (siapa yang **mengerjakan** servis, beda dari `agent` yang cuma memproses penjualan di kasir). Tapi diverifikasi langsung ke kode (`grep -rn "Employee" app/api/v1/` — nol hasil di luar yang sudah disebut di sini):
+### Endpoint
 
-- **Tidak ada `/api/v1/employees` atau endpoint apa pun untuk list/detail `Employee`.** Model `Employee` ada (`models/Employee.ts`: `user`, `branch`, `compensation`, `employmentStatus`, `joinedAt`, `resignedAt`), tapi satu-satunya kode yang membacanya adalah validasi internal saat `createTransaction` — tidak ada route HTTP yang mengeksposnya sama sekali.
-- **`employee` pada response Transaction juga tidak pernah di-populate** — `services/transactionService.ts`'s `listTransactions`/`getTransactionById`/`getReceipt` semuanya memanggil `.populate("branch", ...)`, `.populate("agent", ...)`, `.populate("customer", ...)`, tapi **tidak pernah** `.populate("employee", ...)`. Field `employee` di response selalu ObjectId mentah, tidak pernah `{_id, name}`.
+```
+GET /api/v1/employees
+```
 
-**Konsekuensi gabungan:** app tidak punya cara mengambil daftar employee untuk ditampilkan sebagai picker saat input transaksi, **dan** tidak punya cara menampilkan nama employee dari transaksi yang sudah dibuat — bahkan kalau id-nya didapat dari sumber lain (mis. hardcode sementara untuk testing), tidak ada endpoint untuk resolve id itu jadi nama.
+**Auth:** Session cookie (`grooma_session`) wajib. Policy `EXEMPT_AGENT` — AGENT selalu bisa mengakses endpoint ini meskipun subscription HOST nunggak (sama seperti endpoint POS core di §1).
 
-**Status: pending, bukan sesuatu yang bisa diselesaikan dari sisi dokumentasi integrasi.** Ini butuh endpoint baru di backend sebelum alur create-transaction bisa benar-benar diimplementasikan di Flutter. Jangan menebak bentuk endpoint yang belum ada (mis. jangan asumsikan `GET /employees` akan berbentuk tertentu) — konfirmasi ke tim backend dulu.
+### Query Params
+
+| Param | Tipe | Default | Catatan |
+|---|---|---|---|
+| `page` | `integer` | `1` | |
+| `limit` | `integer` | `20` | Maks `100` — untuk picker, kirim `limit=100` |
+| `branchId` | `string` | — | **HOST only** — AGENT: diabaikan secara diam-diam (tidak error, tapi tidak berpengaruh) |
+
+### Authorization & Scoping
+
+- **AGENT** → response selalu dibatasi ke cabang AGENT yang login (`user.branch` dari sesi). Parameter `branchId` di query string **diabaikan secara diam-diam** (pola yang sama seperti `GET /transactions` dan endpoint inventory) — tidak ada cara AGENT mengintip employee cabang lain.
+- **HOST tanpa `branchId`** → semua cabang.
+- **HOST dengan `branchId`** → difilter ke cabang tersebut.
+- Filter `employmentStatus: "ACTIVE"` **selalu diterapkan di server** — employee berstatus `RESIGNED` atau `SUSPENDED` tidak pernah muncul di response, tidak peduli parameter apa pun yang dikirim.
+
+### Response `200 OK`
+
+```json
+{
+  "success": true,
+  "data": {
+    "employees": [
+      {
+        "_id": "66cc33dd44ee55ff66007711",
+        "name": "Budi Santoso",
+        "branch": { "_id": "66ffaa0011223344556677aa", "name": "Grooma Central" },
+        "employmentStatus": "ACTIVE"
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 5, "totalPages": 1 }
+  }
+}
+```
+
+**Catatan field penting:**
+- `name` berasal dari `User.name` (relasi populate, bukan denormalisasi) — ini nama karyawan seperti yang tercatat di akun User-nya.
+- `branch` adalah `{ _id, name }` saja — bukan objek cabang lengkap.
+- Field kompensasi (`compensation.*`), `joinedAt`, `resignedAt` **tidak pernah ada** di response ini.
+- Field akun User (`username`, `password`, `role`, `status`) **tidak pernah ada** di response ini.
+
+### Status Code
+
+| Status | Kapan |
+|---|---|
+| `200` | Sukses |
+| `400` | `page`/`limit` di luar rentang |
+| `401` | Tidak terautentikasi |
+| `402` | HOST dengan subscription lapsed (AGENT tidak pernah kena ini di endpoint ini) |
+| `403` | Bukan HOST atau AGENT |
+
+### Rekomendasi Implementasi Flutter
+
+- **Fetch saat layar "Buat Transaksi" diinisialisasi** — panggil `GET /employees?limit=100` sekali untuk mengisi picker employee. Untuk cabang yang jumlah karyawannya bisa >100, implementasikan paginated picker atau lazy search.
+- **Gunakan `_id` sebagai nilai `employeeId`** saat POST `/transactions`.
+- **Cache hasil fetch** untuk sesi layar — tidak perlu fetch ulang setiap kali buka form kecuali ada kebutuhan sinkronisasi data terkini.
+- **`employee` di response transaksi (list/detail/receipt) tetap berupa ObjectId string** (tidak pernah populated — by design, bukan bug). Gunakan data dari endpoint ini untuk me-resolve nama employee dari ObjectId yang tersimpan di transaksi.
 
 ---
 
@@ -27,7 +83,8 @@ Sejak Phase 10 (PRD §5.5, §5.13), `POST /transactions` **mewajibkan** field `e
 
 | Method | Endpoint | Role | Catatan |
 |---|---|---|---|
-| POST | `/api/v1/transactions` | **AGENT only** | HOST tidak bisa membuat transaksi (403). Butuh `employeeId` — lihat §0 |
+| POST | `/api/v1/transactions` | **AGENT only** | HOST tidak bisa membuat transaksi (403). Butuh `employeeId` — ambil dari `GET /employees` (§0) |
+| GET | `/api/v1/employees` | HOST, AGENT | Daftar employee aktif untuk picker `employeeId`. `EXEMPT_AGENT` — lihat §0 |
 | GET | `/api/v1/transactions` | HOST, AGENT | AGENT lihat **seluruh transaksi cabangnya**, bukan cuma miliknya sendiri |
 | GET | `/api/v1/transactions/:id` | HOST, AGENT (cabang sendiri) | |
 | POST | `/api/v1/transactions/:id/complete` | **AGENT only** | |
@@ -79,7 +136,7 @@ Sejak Phase 10 (PRD §5.5, §5.13), `POST /transactions` **mewajibkan** field `e
 | `treatmentId` | `string` | Lihat §0.1 | |
 | `colouringId` | `string` | Lihat §0.1 | |
 | `chemicalId` | `string` | Lihat §0.1 | |
-| `employeeId` | `string` | **Ya** | Siapa yang mengerjakan servis — **lihat blocker §0**, belum ada cara mengambil daftarnya |
+| `employeeId` | `string` | **Ya** | Siapa yang mengerjakan servis — **ambil daftarnya dari `GET /employees` (§0)** |
 | `paymentMethod` | `"CASH" \| "QRIS"` | **Ya** | |
 | `discountAmount` | `number` | Tidak | Default `0`. Tidak boleh melebihi total harga kategori yang dipilih (422 kalau melebihi) |
 | `serviceHourType` | `"REGULAR" \| "OVERTIME"` | Tidak | Default `"REGULAR"`. **Hanya tercatat untuk laporan, tidak memengaruhi harga sama sekali** |
@@ -160,7 +217,7 @@ pointsEarned    = floor(total / 1000)
 }
 ```
 
-⚠️ **`branch`/`agent`/`employee`/`customer`/kelima field kategori di response `create` adalah ObjectId mentah (string), BUKAN object `{id, name}`** — beda dari response `list`/`detail` yang sebagian populated (lihat §3). Endpoint create tidak melakukan `.populate()` sama sekali. `employee` **tetap ObjectId mentah di SEMUA endpoint, termasuk list/detail** (lihat blocker §0) — tidak ada tempat di API ini yang pernah menampilkannya sebagai nama.
+⚠️ **`branch`/`agent`/`employee`/`customer`/kelima field kategori di response `create` adalah ObjectId mentah (string), BUKAN object `{id, name}`** — beda dari response `list`/`detail` yang sebagian populated (lihat §3). Endpoint create tidak melakukan `.populate()` sama sekali. `employee` **tetap ObjectId mentah di SEMUA endpoint, termasuk list/detail** (by design — service tidak memanggil `.populate("employee", ...)`) — gunakan data dari `GET /employees` (§0) yang di-fetch saat layar diinisialisasi untuk me-resolve ObjectId ini jadi nama di sisi client.
 
 **Kategori yang tidak diisi muncul sebagai `null`** (`shaving`/`treatment`/`colouring`/`chemical` di atas) — field dan `*Snapshot` pasangannya sama-sama `null`/absen kalau kategori itu tidak dipilih.
 
@@ -286,13 +343,13 @@ pointsEarned    = floor(total / 1000)
 }
 ```
 
-Di sini `branch`/`agent`/`customer` **sudah populated** jadi object (`customer` jadi `null` kalau transaksi tidak punya customer tercatat) — beda dengan response `create` di §2. **`employee` TIDAK ikut populated** (lihat blocker §0) — tetap ObjectId mentah di sini juga. Kelima field kategori (`haircut`/`shaving`/`treatment`/`colouring`/`chemical`) tetap ObjectId mentah di semua endpoint — nama yang ditampilkan ke user selalu dari `*Snapshot.name` masing-masing, bukan dari hasil populate.
+Di sini `branch`/`agent`/`customer` **sudah populated** jadi object (`customer` jadi `null` kalau transaksi tidak punya customer tercatat) — beda dengan response `create` di §2. **`employee` TIDAK ikut populated** (by design — service tidak memanggil `.populate("employee", ...)`) — tetap ObjectId mentah. Gunakan data employee dari `GET /employees` (§0) yang sudah di-fetch sebelumnya untuk me-resolve nama di sisi client. Kelima field kategori (`haircut`/`shaving`/`treatment`/`colouring`/`chemical`) tetap ObjectId mentah di semua endpoint — nama yang ditampilkan ke user selalu dari `*Snapshot.name` masing-masing, bukan dari hasil populate.
 
 ---
 
 ## 4. GET /api/v1/transactions/:id — Detail Transaksi
 
-Bentuk response **identik dengan satu item di `transactions[]` pada §3** (populasi field yang sama, termasuk `employee` yang tetap tidak populated), dibungkus `{ transaction: {...} }` (bukan array).
+Bentuk response **identik dengan satu item di `transactions[]` pada §3** (populasi field yang sama, termasuk `employee` yang tetap tidak populated — by design, resolve via `GET /employees` §0), dibungkus `{ transaction: {...} }` (bukan array).
 
 | Status | Kapan |
 |---|---|
@@ -338,7 +395,7 @@ Efek samping kalau transaksi yang dibatalkan sebelumnya `PAID` dan punya custome
 
 ⚠️ **Ini `GET`, tapi punya side effect: setiap kali dipanggil, `receipt.printCount` bertambah 1.** Jangan panggil untuk preview — pakai `GET /transactions/:id` (§4) untuk itu.
 
-`branch` di response ini populated lebih lengkap — `{ _id, name, branchCode, address, phone }`. `employee` dan kelima field kategori **tetap tidak populated**, sama seperti endpoint lain (§0).
+`branch` di response ini populated lebih lengkap — `{ _id, name, branchCode, address, phone }`. `employee` dan kelima field kategori **tetap tidak populated** (by design, sama seperti endpoint lain — resolve nama employee via `GET /employees` §0).
 
 ```json
 {
@@ -447,13 +504,14 @@ Response `201`: `{ "payment": { ...sama seperti bentuk payment di §2... } }`.
 
 ## 10. Catatan Implementasi Flutter
 
-- **🐛 Blocker employee — lihat §0 sebelum membangun layar create transaksi sama sekali.** Tidak ada endpoint untuk daftar Employee, dan field-nya tidak pernah populated di response manapun.
+- **Fetch daftar employee di awal layar "Buat Transaksi"** — panggil `GET /employees?limit=100` saat `initState` untuk mengisi picker `employeeId`. Gunakan `_id` sebagai nilai yang dikirim ke `POST /transactions`. Cache hasilnya untuk durasi sesi layar. Untuk cabang besar (>100 karyawan aktif), implementasikan paginated picker atau lazy search dengan `limit` default. Detail endpoint di §0.
+- **`employee` di response transaksi (list/detail/receipt) selalu ObjectId string** — tidak pernah populated di endpoint manapun (by design). Resolve nama employee di sisi client menggunakan data dari `GET /employees` yang sudah di-fetch di awal. Jangan ekspektasikan `{_id, name}` dari field `employee` di response transaksi.
 - **Hapus seluruh referensi `serviceId`** — diganti `haircutId`/`shavingId`/`treatmentId`/`colouringId`/`chemicalId`, 1–5 di antaranya boleh terisi sekaligus (§2).
 - **UI pemilihan kategori servis harus mendukung multi-select**, bukan single-select seperti dulu — satu transaksi bisa punya haircut + shaving bersamaan. Ambil daftarnya dari `KELOLA-MOBILE-API-INTEGRATION.md` §3 (5 endpoint terpisah, masing-masing butuh `limit=100` untuk picker lengkap).
 - **Hitung ulang pemahaman soal `ownerRevenue + employeeRevenue === total`** — ini hanya terjamin kalau tepat satu kategori terisi. Begitu >1 kategori + ada diskon, jangan validasi invarian ini di app (§2, bagian formula).
 - **Generate `Idempotency-Key` per percobaan submit** (§2.5) — satu-satunya proteksi terhadap double-charge. `replayed` tidak pernah dikirim ke client — jangan desain UI yang mengandalkan field itu.
 - **`transactionStatus: "IN_PROGRESS"` ada di enum tapi tidak pernah di-set oleh endpoint manapun** — alurnya cuma `PENDING → COMPLETED` (§5) atau `PENDING → CANCELLED` (§6).
-- **Field kategori (`haircut`/`shaving`/dst.) DAN `employee` selalu ObjectId mentah** di semua response transaksi — nama layanan dari `*Snapshot.name`; nama employee **tidak bisa ditampilkan sama sekali** sampai blocker §0 terselesaikan.
+- **Field kategori (`haircut`/`shaving`/dst.) selalu ObjectId mentah** di semua response transaksi — nama layanan dari `*Snapshot.name`. **`employee` juga selalu ObjectId** (tidak pernah populated, by design) — resolve nama dari data `GET /employees` yang di-fetch di awal layar (§0).
 - **Response `create` (§2) tidak populated, response `list`/`detail`/`receipt` sebagian populated** (`branch`/`agent`/`customer` saja, bukan `employee`) — jangan pakai satu model Dart yang sama secara naif untuk keduanya.
 - **Setelah create dengan `paymentMethod: QRIS`, selalu cek `paymentError`** sebelum menganggap QR siap ditampilkan.
 - **Alur approval koreksi transaksi ada di dokumen terpisah** — lihat `docs/TRANSACTION-CHANGE-REQUESTS-MOBILE-API-INTEGRATION.md`. Catatan silang: `employeeId` **tidak bisa dikoreksi** lewat alur itu — lihat dokumen tersebut §0.1.
@@ -462,5 +520,6 @@ Response `201`: `{ "payment": { ...sama seperti bentuk payment di §2... } }`.
 
 ## 11. Pending / Blocker — Ringkasan
 
-- **🐛 Blocker utama (§0): tidak ada endpoint untuk list/detail `Employee`, dan `employee` tidak pernah populated di response manapun.** Ini memblokir implementasi create-transaction secara penuh (tidak ada cara mengisi picker employee) dan memblokir tampilan "siapa yang mengerjakan" di riwayat transaksi. Perlu endpoint baru di backend — bukan sesuatu yang bisa diakali dari sisi Flutter.
-- Tidak ditemukan blocker lain di modul ini — seluruh endpoint lain (list/detail/complete/cancel/receipt/payments) diverifikasi langsung ke kode dan berfungsi sesuai yang didokumentasikan di atas.
+- **Employee endpoint tersedia sejak Phase 13 (2026-11-10) ✅** — `GET /api/v1/employees` (§0) adalah sumber data untuk picker `employeeId` di layar buat transaksi. Blocker sebelumnya sudah terselesaikan.
+- `employee` dalam response transaksi (list/detail/receipt) **tetap berupa ObjectId** (tidak pernah populated — by design, bukan bug). Resolve nama di sisi client menggunakan data dari `GET /employees` yang di-fetch saat inisialisasi layar.
+- Tidak ditemukan blocker lain di modul ini — seluruh endpoint (list/detail/complete/cancel/receipt/payments) diverifikasi langsung ke kode dan berfungsi sesuai yang didokumentasikan di atas.

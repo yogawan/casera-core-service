@@ -19,7 +19,9 @@
 
 Sama seperti alur create (`TRANSACTION-MOBILE-API-INTEGRATION.md` §2), `requestedChanges.serviceId` **sudah tidak ada** — diganti lima field opsional: `haircutId`, `shavingId`, `treatmentId`, `colouringId`, `chemicalId`. Detail lengkapnya di §2.
 
-**Dikonfirmasi langsung dari `validations/approvalSchema.ts`: `employeeId` TIDAK ADA di whitelist `requestedChanges` sama sekali.** Kalau AGENT salah pilih employee saat create transaksi (lihat blocker terpisah di `TRANSACTION-MOBILE-API-INTEGRATION.md` §0), **tidak ada cara memperbaikinya** — bukan cuma lewat modul ini, tapi lewat API manapun. Satu-satunya field referensi yang bisa dikoreksi tetap seperti sebelumnya: kategori servis (sekarang 5, bukan 1) dan customer.
+**Dikonfirmasi langsung dari `validations/approvalSchema.ts`: `employeeId` TIDAK ADA di whitelist `requestedChanges` sama sekali.** Ini keputusan desain yang disengaja (PRD §5.5/§5.13) — `employeeId` memang tidak dimasukkan ke whitelist koreksi. Kalau AGENT salah pilih employee saat create transaksi, **tidak ada cara memperbaikinya lewat alur change request ini**, dan tidak ada endpoint lain yang mendukung perubahan tersebut post-create. Satu-satunya field referensi yang bisa dikoreksi tetap seperti sebelumnya: kategori servis (sekarang 5, bukan 1) dan customer.
+
+> **Catatan:** Meskipun `employeeId` tidak bisa dikoreksi, nama employee yang tercatat di transaksi kini **bisa di-resolve** menggunakan `GET /api/v1/employees` (Phase 13 ✅ — lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §0): ambil list employee, lalu cocokan ObjectId di field `employee` pada response transaksi dengan `_id` di list tersebut. Ini hanya untuk **tampilan** — bukan mekanisme koreksi.
 
 ---
 
@@ -246,7 +248,7 @@ Setelah ditolak, AGENT **bisa langsung mengajukan pengajuan baru** pada transaks
 ## 7. Catatan Implementasi Flutter
 
 - **Hapus seluruh referensi `serviceId` di form pengajuan koreksi** — diganti `haircutId`/`shavingId`/`treatmentId`/`colouringId`/`chemicalId` (§2). UI-nya perlu mendukung memilih/ganti salah satu dari 5 kategori, bukan satu dropdown service tunggal.
-- **Jangan tambahkan opsi "koreksi employee" di UI** — `employeeId` tidak ada di whitelist (§0.1), dan tidak ada mekanisme lain untuk memperbaikinya. Kalau user butuh ini, itu pertanyaan untuk tim backend, bukan sesuatu yang bisa dibangun di Flutter hari ini.
+- **Jangan tambahkan opsi "koreksi employee" di UI** — `employeeId` tidak ada di whitelist (§0.1), dan tidak ada endpoint lain yang mendukung perubahan `employeeId` post-create (by design, bukan keterbatasan sementara). Nama employee yang tercatat pada transaksi kini bisa **ditampilkan** (resolve ObjectId via `GET /employees` — lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §0), tapi mengubahnya lewat API belum didukung.
 - **Jangan bangun model `ChangeRequest` dengan `id` sendiri** — semua state-nya adalah bagian dari model `Transaction`. Reuse model Transaction dari `TRANSACTION-MOBILE-API-INTEGRATION.md`.
 - **Untuk layar "status pengajuan saya" (AGENT):** simpan `transaction._id` begitu submit (§2) sukses, lalu pakai id itu untuk cek ulang via §4 (yang juga menampilkan `reviewedBy` kalau sudah diputuskan). Jangan desain layar "daftar pengajuan saya" dari `GET /transaction-change-requests` — endpoint itu `403` untuk AGENT.
 - **Tombol Approve di UI HOST harus siap menangani `422`** sebagai hasil yang valid — termasuk kasus di mana `422` dipicu oleh kategori yang **tidak** diajukan untuk diubah, tapi kebetulan sudah tidak tersedia lagi (§5 poin 2) — pesan errornya akan menyebut kategori spesifik yang bermasalah, tampilkan apa adanya ke HOST.
@@ -256,4 +258,4 @@ Setelah ditolak, AGENT **bisa langsung mengajukan pengajuan baru** pada transaks
 
 ## 8. Pending / Belum Bisa Dipastikan dari Audit Ini
 
-Tidak ditemukan blocker untuk modul ini sendiri — kelima endpoint, whitelist, dan logic approve/reject diverifikasi langsung dari kode yang sudah berjalan (Phase 11 ✅). Satu limitasi struktural dicatat sebagai fakta (bukan blocker tersendiri, karena sudah konsisten di seluruh backend): `employeeId` tidak bisa dikoreksi lewat modul ini maupun modul lain (§0.1) — ini adalah konsekuensi langsung dari blocker yang sudah didokumentasikan di `TRANSACTION-MOBILE-API-INTEGRATION.md` §0 (tidak ada endpoint Employee sama sekali), bukan gap baru yang berdiri sendiri di modul approval ini.
+Tidak ditemukan blocker untuk modul ini sendiri — kelima endpoint, whitelist, dan logic approve/reject diverifikasi langsung dari kode yang sudah berjalan (Phase 11 ✅). Satu limitasi struktural dicatat sebagai fakta desain yang disengaja (bukan blocker): `employeeId` tidak bisa dikoreksi lewat modul ini maupun modul lain (§0.1) — ini adalah keputusan whitelist yang eksplisit, bukan akibat ketiadaan endpoint Employee. Endpoint `GET /api/v1/employees` sendiri sudah tersedia sejak Phase 13 (2026-11-10) untuk kebutuhan tampilan/picker — lihat `TRANSACTION-MOBILE-API-INTEGRATION.md` §0.
