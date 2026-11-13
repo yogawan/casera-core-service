@@ -53,6 +53,8 @@
 
 4 dari 5 endpoint `EXEMPT_AGENT` (`lib/authorization.ts`) — AGENT tetap bisa cari/buat/lihat/edit customer meski subscription HOST-nya nunggak, bagian dari alur melayani customer yang sedang di tempat (PRD §23.4.1). Mengaktifkan/nonaktifkan customer murni keputusan administratif HOST, tidak dikecualikan — detail urutan 402/403-nya ada di §7.
 
+**Endpoint terkait (di luar modul ini):** `GET /api/v1/employees` — dibutuhkan bersama picker customer saat membuat transaksi. Didokumentasikan di `TRANSACTION-MOBILE-API-INTEGRATION.md §0` dan diringkas di §10 dokumen ini.
+
 ---
 
 ## 3. GET /api/v1/customers — Cari/List Customer
@@ -234,14 +236,122 @@ Tidak ada efek lanjutan otomatis ke transaksi lama milik customer ini — menona
 - **Endpoint list (§3) tetap berpaginasi, default 20 baris** — perilaku ini dari Phase 9 (2026-10-19), tidak berubah oleh restrukturisasi field. Infinite scroll berhenti saat `page >= totalPages`; tampilkan jumlah hasil dari `pagination.total`, bukan `customers.length`.
 - **Search box boleh tetap mengirim string kosong** saat dikosongkan user (§3) — backend menganggapnya "tanpa filter". Tambahkan `maxLength: 100` di field-nya.
 - **Jangan asumsikan `201` dari create = data kosong baru** — selalu render response-nya, bukan input form-nya, karena bisa saja backend mengembalikan customer lama yang sudah match by phone (§4).
-- **Tidak perlu filter berdasarkan cabang di UI manapun untuk modul ini** (§1) — AGENT di sini melihat seluruh basis customer bisnis, bukan cuma cabangnya.
+- **Tidak perlu filter berdasarkan cabang di UI manapun untuk modul ini** (§1) — AGENT di sini melihat seluruh basis customer bisnis, bukan cuma cabangnya. **Ini berbeda dari picker employee** (`GET /api/v1/employees`) yang secara otomatis dibatasi ke cabang AGENT yang login — dua perilaku berbeda untuk dua entitas berbeda.
 - **Endpoint status (§7) bisa balas `402` untuk AGENT juga**, bukan cuma HOST — kalau app punya penanganan error generik per status code (bukan per endpoint), ini sudah otomatis tertangani; kalau ada logic yang berasumsi "402 di modul Customer = pasti HOST", perbaiki asumsinya.
+- **Picker customer di layar Buat Transaksi harus diinisialisasi paralel dengan picker employee** — keduanya dibutuhkan sebelum form bisa disubmit. Panggil `GET /customers?limit=20` dan `GET /employees?limit=100` secara bersamaan (`Future.wait`). Customer bersifat search-first (debounce), employee di-fetch sekali di awal. Detail alur di §10.
 
 ---
 
-## 10. Belum Diperiksa / Di Luar Scope Audit Ini
+## 10. Relasi Customer ↔ Employee ↔ Transaksi (Phase 13 ✅)
 
-Tidak ditemukan blocker atau spesifikasi yang belum tersedia untuk modul Customer sendiri — seluruh endpoint, schema, dan service function di atas diverifikasi langsung dari kode yang sudah dieksekusi penuh (PLAN-GROOMA.md Phase 12, status ✅). Dua hal berikut **disengaja** tidak disentuh karena di luar cakupan modul Customer:
+> Phase 13 (diimplementasikan 2026-11-10) menyelesaikan blocker yang sebelumnya tercatat di `TRANSACTION-MOBILE-API-INTEGRATION.md §0`: endpoint `GET /api/v1/employees` sekarang tersedia dan harus menjadi sumber data untuk picker `employeeId` di layar buat transaksi. Bagian ini menjelaskan keterkaitan modul Customer dengan alur tersebut dari sudut pandang Customer API.
 
-- **`TRANSACTION-MOBILE-API-INTEGRATION.md`** menampilkan `customer` dalam bentuk populated minimal (`_id`, `name`, `phone`) di response transaksi — bentuk ini **tidak terpengaruh** oleh restrukturisasi field Customer (field yang ditampilkan di sana tidak termasuk yang dihapus). Namun dokumen itu sendiri diketahui belum mengikuti perubahan Phase 10 (`employeeId` wajib) dan Phase 11 (kategori servis Haircut/Shaving/dll menggantikan `service` tunggal) — **pending**, bukan bagian dari audit modul Customer ini.
+### 10.1. Alur Pembuatan Transaksi — Ketiga Entitas
+
+Satu transaksi menghubungkan tiga entitas utama:
+
+| Entitas | Field di `Transaction` | Sumber data untuk picker |
+|---|---|---|
+| **Customer** | `customer` (optional, ObjectId → Customer) | `GET /api/v1/customers` (modul ini, §3) |
+| **Employee** | `employee` (wajib, ObjectId → Employee) | `GET /api/v1/employees` (endpoint baru Phase 13) |
+| **Agent (kasir)** | `agent` (otomatis dari sesi) | Tidak perlu picker — diambil dari session cookie |
+
+Layar \"Buat Transaksi\" di Flutter harus mengambil data kedua endpoint di atas **sebelum form bisa diisi lengkap**:
+
+```
+// Inisialisasi layar — dua fetch paralel
+Future.wait([
+  GET /api/v1/customers?limit=20,     // paginasi — search-first dengan debounce
+  GET /api/v1/employees?limit=100,    // ambil semua employee aktif di cabang
+])
+```
+
+### 10.2. Endpoint Daftar Employee — Ringkasan untuk Konteks Transaksi
+
+Endpoint lengkap didokumentasikan di `TRANSACTION-MOBILE-API-INTEGRATION.md §0`. Ringkasan dari sudut pandang relasi customer–employee–transaksi:
+
+```
+GET /api/v1/employees
+```
+
+**Auth:** Session cookie wajib. Policy `EXEMPT_AGENT` (sama seperti endpoint Customer di §2 — AGENT tetap bisa akses meski subscription HOST nunggak).
+
+**Query params relevan:**
+
+| Param | Tipe | Default | Catatan |
+|---|---|---|---|
+| `page` | `integer` | `1` | |
+| `limit` | `integer` | `20` | Maks `100` — untuk picker, kirim `limit=100` |
+| `branchId` | `string` | — | **HOST only** — AGENT: diabaikan secara diam-diam |
+
+**Scoping (berbeda dari Customer — employee IS branch-scoped):**
+
+- **AGENT** → response dibatasi ke cabang AGENT yang login (`user.branch` dari sesi). Parameter `branchId` diabaikan secara diam-diam — tidak ada cara AGENT mengintip employee cabang lain. **Ini berbeda dari Customer (§1) yang tidak terikat cabang sama sekali.**
+- **HOST tanpa `branchId`** → semua cabang.
+- **HOST dengan `branchId`** → difilter ke cabang tersebut.
+- Filter `employmentStatus: "ACTIVE"` **selalu diterapkan di server** — employee `RESIGNED`/`SUSPENDED` tidak pernah muncul.
+
+**Response `200 OK`:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "employees": [
+      {
+        "_id": "66cc33dd44ee55ff66007711",
+        "name": "Budi Santoso",
+        "branch": { "_id": "66ffaa0011223344556677aa", "name": "Grooma Central" },
+        "employmentStatus": "ACTIVE"
+      }
+    ],
+    "pagination": { "page": 1, "limit": 20, "total": 5, "totalPages": 1 }
+  }
+}
+```
+
+**Field yang TIDAK ADA di response ini** (tidak pernah terekspos): `compensation.*`, `joinedAt`, `resignedAt`, `username`, `password`, `role`, `status`.
+
+**Status code:**
+
+| Status | Kapan |
+|---|---|
+| `200` | Sukses |
+| `400` | `page`/`limit` di luar rentang |
+| `401` | Tidak terautentikasi |
+| `402` | HOST dengan subscription lapsed (AGENT tidak pernah kena ini di endpoint ini) |
+| `403` | Bukan HOST atau AGENT |
+
+### 10.3. Customer di Response Transaksi
+
+Ketika transaksi dibuat dengan `customerId`, field `customer` di response transaksi berbentuk berbeda tergantung endpoint:
+
+| Endpoint | Bentuk `customer` |
+|---|---|
+| `POST /transactions` (create) | ObjectId mentah (string) — tidak populated |
+| `GET /transactions` (list) | `{ "_id": "...", "name": "Andi Wijaya", "phone": "08123456789" }` atau `null` |
+| `GET /transactions/:id` (detail) | Sama seperti list |
+| `GET /transactions/:id/receipt` | Sama seperti list |
+
+Field yang di-populate dari Customer di response transaksi (`_id`, `name`, `phone`) **tidak termasuk field yang dihapus di Phase 12** (`email`, `gender`, dst.) — sehingga perubahan Phase 12 **tidak memengaruhi** bentuk `customer` di response transaksi.
+
+> **`cityFrom`/`age`/`busyness` tidak pernah muncul di response transaksi** — populate transaksi hanya mengambil `_id`, `name`, dan `phone` dari Customer. Untuk menampilkan detail lengkap customer dari sebuah transaksi, panggil `GET /customers/:id` (§5) secara terpisah.
+
+### 10.4. `employeeId` di Request Transaksi — Validasi Backend
+
+Saat `POST /transactions`, `employeeId` divalidasi **3 syarat sekaligus** di `services/transactionService.ts`:
+
+1. Employee dengan `_id` tersebut ada di database.
+2. `employmentStatus: "ACTIVE"` — employee yang sudah resigned/suspended tidak bisa dipilih.
+3. `branch` employee sama dengan cabang AGENT yang login.
+
+Kegagalan salah satu syarat → `422 BUSINESS_RULE_VIOLATION`: `"Employee is not available for this branch."`. Karena picker employee di Flutter menggunakan `GET /api/v1/employees` yang sudah memfilter `ACTIVE` dan branch-scoped, error 422 ini hanya bisa terjadi kalau ada race condition (employee dinonaktifkan tepat di antara fetch picker dan submit form).
+
+---
+
+## 11. Belum Diperiksa / Di Luar Scope Audit Ini
+
+Tidak ditemukan blocker atau spesifikasi yang belum tersedia untuk modul Customer sendiri — seluruh endpoint, schema, dan service function di atas diverifikasi langsung dari kode yang sudah dieksekusi penuh (PLAN-GROOMA.md Phase 12 ✅, Phase 13 ✅). Dua hal berikut **disengaja** tidak disentuh karena di luar cakupan modul Customer:
+
+- **`TRANSACTION-MOBILE-API-INTEGRATION.md`** — sudah diperbarui penuh untuk Phase 10 (`employeeId` wajib), Phase 11 (5 kategori servis), dan Phase 13 (`GET /api/v1/employees`). Referensi silang di §10 dokumen ini mengacu ke versi terbarunya.
 - **Migrasi data customer lama** — sudah diputuskan final (tidak ada migrasi, §0), bukan item pending.
